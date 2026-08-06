@@ -352,12 +352,17 @@ def _wait_for_human_verification_clear(driver, log, timeout=300):
 class VidapayTransferSystem:
     """Standalone CRM logic for Inventory Reassignment with proper login flow."""
 
-    def __init__(self, account_id, username, password, log_callback, stop_event):
+    def __init__(self, account_id, username, password, log_callback,
+                 stop_event, vpn_pause_cb=None):
         self.account_id = account_id
         self.username = username
         self.password = password
         self.log = log_callback
         self.stop_event = stop_event
+        # Called after the browser opens, before navigating to the CRM
+        # login, so the user can connect their VPN first (matches the
+        # VidaPay Ordering / Incentive Extractors behavior).
+        self.vpn_pause_cb = vpn_pause_cb
         self.driver = None
         self.wait = None
 
@@ -389,8 +394,33 @@ class VidapayTransferSystem:
             # second tab of this same browser window.
             self.main_window = self.driver.current_window_handle
 
+            # Pause here so the user can connect their VPN before the bot
+            # navigates to the CRM site (same as the VidaPay Ordering and
+            # Incentive Extractor tools). Skipping this caused page-load
+            # failures like "CRM Login failed: Message:" with no text.
+            if self.vpn_pause_cb is not None:
+                self.log(
+                    "Browser opened - connect your VPN, then confirm to continue..."
+                )
+                if not self.vpn_pause_cb():
+                    self.log("VPN connect cancelled. Aborting run.")
+                    return False
+
             self.log("Navigating to VidaPay Login...")
-            self.driver.get(CRM_LOGIN_URL)
+            # Retry the load: right after a VPN connects, the tunnel can
+            # still be settling and the first navigation may fail.
+            for attempt in range(1, 4):
+                try:
+                    self.driver.get(CRM_LOGIN_URL)
+                    break
+                except Exception as nav_err:
+                    if attempt == 3:
+                        raise
+                    self.log(
+                        f"Login page load failed (attempt {attempt}/3): "
+                        f"{nav_err}"
+                    )
+                    time.sleep(5)
             time.sleep(3)
 
             if self.should_stop():
@@ -1552,6 +1582,29 @@ class VidaPayTransferApp(tk.Tk):
             pass
         self.after(100, self._process_log_queue)
 
+    def _prompt_vpn_connect(self):
+        """Called from the workflow worker thread after the browser opens.
+
+        Marshals a modal prompt onto the UI thread asking the user to
+        connect their VPN, and blocks until they click OK/Cancel. Returns
+        True to proceed with the login, False to abort the run.
+        """
+        ready = threading.Event()
+        proceed = {"ok": False}
+
+        def ask():
+            proceed["ok"] = messagebox.askokcancel(
+                "Connect VPN",
+                "The browser is now open.\n\n"
+                "Connect your VPN now (if not already connected), then "
+                "click OK to continue to the VidaPay login page.",
+            )
+            ready.set()
+
+        self.after(0, ask)
+        ready.wait()
+        return proceed["ok"]
+
     # ------------------------------------------------------------------
     # GFH Branding: logo, icons, themes
     # ------------------------------------------------------------------
@@ -2182,6 +2235,7 @@ class VidaPayTransferApp(tk.Tk):
             crm_system = VidapayTransferSystem(
                 crm_acc, crm_usr, crm_pwd,
                 self.log_msg, self.stop_event,
+                vpn_pause_cb=self._prompt_vpn_connect,
             )
 
             if not crm_system.start_browser_and_login():
