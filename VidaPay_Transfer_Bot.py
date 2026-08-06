@@ -14,6 +14,7 @@ import urllib.request
 import importlib.util
 import threading
 import tkinter as tk
+from theme_manager import ThemeManager, apply_theme_to_window, get_copyright_year
 from tkinter import ttk, messagebox, scrolledtext, filedialog
 from datetime import datetime
 
