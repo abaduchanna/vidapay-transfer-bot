@@ -125,8 +125,12 @@ def _locate_tesseract():
 
 pytesseract.pytesseract.tesseract_cmd = _locate_tesseract()
 
-WA_USER_DATA_DIR = os.path.join(
-    os.environ.get("LOCALAPPDATA", ""), "VidaPay_WA_Profile", "User Data"
+# Use the user's real Edge profile, exactly like the VidaPay Ordering and
+# Incentive Extractor tools, so extensions installed in the normal profile
+# (e.g. the USA PLANET VPN add-on the user clicks to connect) appear in the
+# browser toolbar when the bot opens it.
+EDGE_USER_DATA_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Edge", "User Data"
 )
 
 CRM_MAIN_PANEL_URL = "https://www.vidapaycrm.com/Main%20Panel.aspx"
@@ -353,7 +357,7 @@ class VidapayTransferSystem:
     """Standalone CRM logic for Inventory Reassignment with proper login flow."""
 
     def __init__(self, account_id, username, password, log_callback,
-                 stop_event, vpn_pause_cb=None):
+                 stop_event, vpn_pause_cb=None, retry_cb=None):
         self.account_id = account_id
         self.username = username
         self.password = password
@@ -363,6 +367,10 @@ class VidapayTransferSystem:
         # login, so the user can connect their VPN first (matches the
         # VidaPay Ordering / Incentive Extractors behavior).
         self.vpn_pause_cb = vpn_pause_cb
+        # Called when the browser cannot start because the user's normal
+        # Edge profile is locked by a running Edge window. Returns True to
+        # retry after the user closes Edge, False to abort.
+        self.retry_cb = retry_cb
         self.driver = None
         self.wait = None
 
@@ -382,12 +390,33 @@ class VidapayTransferSystem:
             options.add_experimental_option("excludeSwitches", ["enable-automation"])
             options.add_experimental_option("useAutomationExtension", False)
             options.add_experimental_option("detach", True)
-            # Shared persistent profile: WhatsApp Web runs in this exact same
-            # browser session (and keeps its login state) as VidaPay.
-            options.add_argument(f"--user-data-dir={WA_USER_DATA_DIR}")
+            # Same normal Edge profile as the Ordering/Extractor tools: the
+            # user's installed extensions (VPN, etc.) show in the toolbar,
+            # and WhatsApp Web login state persists in the same profile.
+            options.add_argument(f"--user-data-dir={EDGE_USER_DATA_DIR}")
             options.add_argument("--profile-directory=Default")
 
-            self.driver = EdgeDriver(options=options)
+            # Open the browser with the user's real profile. If Edge is
+            # already running with it, the profile is locked and the driver
+            # fails to start -- ask the user to close Edge and retry.
+            created = False
+            for attempt in range(1, 4):
+                try:
+                    self.driver = EdgeDriver(options=options)
+                    created = True
+                    break
+                except Exception as e:
+                    self.log(f"Edge could not open (attempt {attempt}/3): {e}")
+                    if attempt == 3 or self.retry_cb is None:
+                        break
+                    if not self.retry_cb():
+                        break
+            if not created:
+                self.log(
+                    "Could not open the Edge browser. Close all Edge windows "
+                    "and try again."
+                )
+                return False
             _inject_anti_detection(self.driver)
             self.wait = WebDriverWait(self.driver, 30)
             # Record the VidaPay tab; WhatsApp Web opens next to it in a
@@ -890,7 +919,7 @@ class WhatsAppScraper:
         # Standalone mode: launch a dedicated browser for WhatsApp.
         self.owns_driver = True
         options = Options()
-        options.add_argument(f"--user-data-dir={WA_USER_DATA_DIR}")
+        options.add_argument(f"--user-data-dir={EDGE_USER_DATA_DIR}")
         options.add_argument("--profile-directory=Default")
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--no-sandbox")
@@ -1605,6 +1634,29 @@ class VidaPayTransferApp(tk.Tk):
         ready.wait()
         return proceed["ok"]
 
+    def _prompt_close_edge_and_retry(self):
+        """Ask the user to close any open Edge windows so the bot can open
+        the shared normal profile (the driver starts with a fresh instance).
+
+        Returns True to retry opening the browser, False to abort.
+        """
+        ready = threading.Event()
+        retry = {"ok": False}
+
+        def ask():
+            retry["ok"] = messagebox.askretrycancel(
+                "Close Edge to continue",
+                "The bot opens your normal Edge profile so your VPN "
+                "extension is available, but that profile is locked by an "
+                "open Edge window.\n\n"
+                "Close all Edge windows, then click Retry.",
+            )
+            ready.set()
+
+        self.after(0, ask)
+        ready.wait()
+        return retry["ok"]
+
     # ------------------------------------------------------------------
     # GFH Branding: logo, icons, themes
     # ------------------------------------------------------------------
@@ -2236,6 +2288,7 @@ class VidaPayTransferApp(tk.Tk):
                 crm_acc, crm_usr, crm_pwd,
                 self.log_msg, self.stop_event,
                 vpn_pause_cb=self._prompt_vpn_connect,
+                retry_cb=self._prompt_close_edge_and_retry,
             )
 
             if not crm_system.start_browser_and_login():
