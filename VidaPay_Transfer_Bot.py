@@ -66,16 +66,49 @@ DEFAULT_GROUPS = (
 _TESSERACT_CANDIDATES = [
     os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs",
                  "Tesseract-OCR", "tesseract.exe"),
-    os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs",
-                 "Tesseract-OCR", "tesseract.exe"),
+    os.path.join(os.environ.get("LOCALAPPDATA", ""), "Tesseract-OCR",
+                 "tesseract.exe"),
     r"C:\Program Files\Tesseract-OCR\tesseract.exe",
     r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    r"C:\Tesseract-OCR\tesseract.exe",
 ]
+
+# FIX #12: On Windows Ghostscript ships as gswin64c.exe / gswin32c.exe, not
+# "gs" (that name only exists on Unix), so a PATH lookup for "gs" fails on
+# machines that have Ghostscript installed normally. Check the real names
+# plus the default install layout C:\Program Files\gs\gs<ver>\bin\.
+_GHOSTSCRIPT_EXES = ("gswin64c", "gswin32c", "gswin64", "gswin32", "gs")
+
+
 def _is_tesseract_installed():
     """True when a usable tesseract binary already exists on this machine."""
     if shutil.which("tesseract"):
         return True
     return any(os.path.isfile(p) for p in _TESSERACT_CANDIDATES)
+
+
+def _ghostscript_installed():
+    """True when a Ghostscript binary exists somewhere the bot can use."""
+    for name in _GHOSTSCRIPT_EXES:
+        if shutil.which(name):
+            return True
+    if sys.platform.startswith("win"):
+        for base in (r"C:\Program Files\gs", r"C:\Program Files (x86)\gs"):
+            if not os.path.isdir(base):
+                continue
+            try:
+                for ver_dir in os.listdir(base):
+                    bin_dir = os.path.join(base, ver_dir, "bin")
+                    if any(
+                        os.path.isfile(
+                            os.path.join(bin_dir, name + ".exe")
+                        )
+                        for name in _GHOSTSCRIPT_EXES
+                    ):
+                        return True
+            except OSError:
+                continue
+    return False
 
 
 def _locate_tesseract():
@@ -1888,7 +1921,7 @@ class VidaPayTransferApp(tk.Tk):
         missing_tools = []
         if not _is_tesseract_installed():
             missing_tools.append("Tesseract OCR")
-        if not _tool_on_path("gs"):
+        if not _ghostscript_installed():
             missing_tools.append("Ghostscript")
         missing_pkgs = _missing_python_packages()
 
@@ -2016,7 +2049,7 @@ class VidaPayTransferApp(tk.Tk):
                 ],
                 timeout=600,
             )
-            if ok and _tool_on_path("gs"):
+            if ok and _ghostscript_installed():
                 self.log_msg("Ghostscript installed via winget.")
                 return
         self.log_msg(
