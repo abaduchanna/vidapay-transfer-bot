@@ -14,6 +14,9 @@ echo Building VidaPayTransferBot.exe...
 python -m PyInstaller --noconfirm --onefile --windowed ^
     --name VidaPayTransferBot ^
     --icon assets\gfh_bot_icon.ico ^
+    --hidden-import selenium.webdriver.edge.webdriver ^
+    --hidden-import selenium.webdriver.edge.service ^
+    --hidden-import selenium.webdriver.edge.options ^
     VidaPay_Transfer_Bot.py
 
 echo.

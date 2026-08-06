@@ -23,7 +23,10 @@ import schedule
 import pytesseract
 from PIL import Image
 
-from selenium import webdriver
+# Import the Edge driver class directly (not via the lazy `webdriver.Edge`
+# attribute) so PyInstaller bundles selenium.webdriver.edge.webdriver; the
+# lazy alias is invisible to static analysis and gets omitted from the EXE.
+from selenium.webdriver.edge.webdriver import WebDriver as EdgeDriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -379,7 +382,7 @@ class VidapayTransferSystem:
             options.add_argument(f"--user-data-dir={WA_USER_DATA_DIR}")
             options.add_argument("--profile-directory=Default")
 
-            self.driver = webdriver.Edge(options=options)
+            self.driver = EdgeDriver(options=options)
             _inject_anti_detection(self.driver)
             self.wait = WebDriverWait(self.driver, 30)
             # Record the VidaPay tab; WhatsApp Web opens next to it in a
@@ -868,7 +871,7 @@ class WhatsAppScraper:
         options.add_experimental_option("detach", True)
 
         try:
-            self.driver = webdriver.Edge(options=options)
+            self.driver = EdgeDriver(options=options)
             _inject_anti_detection(self.driver)
             self.wait = WebDriverWait(self.driver, 30)
             self.wa_window = self.driver.current_window_handle
