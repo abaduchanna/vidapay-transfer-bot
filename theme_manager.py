@@ -126,6 +126,15 @@ class ThemeManager:
         return f"© {year} Developed by Abad Umair Channa"
 
 
+def get_copyright_year() -> int:
+    """Get current year for dynamic copyright (module-level helper).
+
+    Module-level wrapper so ``from theme_manager import get_copyright_year``
+    works, matching the import used by VidaPay_Transfer_Bot.py.
+    """
+    return ThemeManager.get_copyright_year()
+
+
 def apply_theme_to_window(root: tk.Tk, theme_manager: ThemeManager):
     """Apply theme colors to root window and configure styles."""
     colors = theme_manager.get_colors()
