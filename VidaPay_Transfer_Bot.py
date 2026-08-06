@@ -1,0 +1,2222 @@
+# VidaPay Automation Suite - Standalone Inventory Transfer Bot
+# (No dependency on VidaPay_Device_Ordering_FULL.pyw)
+
+import os
+import re
+import time
+import json
+import queue
+import base64
+import shutil
+import subprocess
+import sys
+import urllib.request
+import importlib.util
+import threading
+import tkinter as tk
+from tkinter import ttk, messagebox, scrolledtext, filedialog
+from datetime import datetime
+
+# Additional requirements
+import schedule
+import pytesseract
+from PIL import Image
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.edge.options import Options
+from selenium.webdriver.common.keys import Keys
+from selenium.common.exceptions import (
+    TimeoutException,
+    StaleElementReferenceException,
+)
+
+# ============================================================================
+# CONFIGURATION & CONSTANTS
+# ============================================================================
+
+APP_DATA_DIR = os.path.join(os.environ.get("APPDATA", ""), "VidaPay_Transfer_Bot")
+if not os.path.exists(APP_DATA_DIR):
+    os.makedirs(APP_DATA_DIR, exist_ok=True)
+
+CONFIG_FILE = os.path.join(APP_DATA_DIR, "transfer_bot_config.json")
+
+# GFH brand assets embedded as base64 (injected at build time) so the bot
+# stays a single self-contained file. When empty, the PIL-rendered fallbacks
+# are used instead.
+EMBEDDED_LOGO_B64 = "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"
+EMBEDDED_ICON_B64 = "AAABAAEAICAAAAEAIACoEAAAFgAAACgAAAAgAAAAQAAAAAEAIAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAA0GRv/NBkb/zQZG/80GRv/NBkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zQZG/81GRv/NBgb/zUZG/81GRv/NBkb/zQZG/80GBv/NRkb/zQYG/80GRv/NBkb/zQZG/80GRv/NBkb/zQZG/81GRv/NRkb/zQZG/80GRv/NBgb/zUZG/80GRv/NBkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GBv/NRgb/zUYG/81GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zYZHP81GRv/NRkb/zUYG/81GRv/NRkb/zUZG/81GRv/NRkc/zUZG/81GRz/Nhkc/zYZG/82GRz/Nhkc/zYZHP82GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zUZG/81GRv/NRkb/zUYG/8/JCf/TDM2/zYaHP81GRv/NRgb/zUZG/81GRv/NRkb/zYZG/82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRv/Nhkb/zYZHP81GRv/NRkb/zYZHP82GRz/Nhkc/zYZHP82GRv/Nhkb/zYZG/82GRz/NRkb/zoeIP8/JCf/Nhkb/zUZG/81GRv/Nhkb/zYZG/82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRv/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zUYG/82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZG/82GRv/Nhkb/zYZG/82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZG/82GRr/NRkh/zMZKv8zGS3/Mxkn/zUZHv82GRr/Nhkb/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRv/Mxoy/yseZv8lIIn/IyCS/yIfkf8iHoz/JB16/ywbUP80GSX/Nhka/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRv/Nhke/y8eWf8mI53/JyGL/y0dW/8wG0H/MBo7/y4aRf8pHGT/IR6O/yMdg/8wGjr/Nhkb/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHf8uIGj/JyWn/y8eWf80Giv/MRxH/ywfaP8rH3D/LR1e/zIaOf8zGS3/Jxxr/yEekv8wGj//Nhka/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRr/MR9S/ykorP8xHk3/Mxw4/yojjf8nJKD/KSGD/ysgd/8oIIj/JSKb/yoecP8vG0f/KB1t/yMfjv8zGi7/Nhkb/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zcZHP83GRz/Nxkb/zUaKP8sKKL/MCJu/zQbM/8qJqD/LCOE/zQaMv83GRv/Nxkb/zYZHf8uHVn/IyOp/yQhnP8sHWX/Jh+G/yodav82GRv/Nxkc/zYZHP82GRz/Nhkc/zYZHP82GRz/Nhkc/zcZHP82GRz/Nxkc/zcZHP83GRz/Nxkc/zcZHP83GRn/NCBT/y4rsP81GzL/LyWD/y0mkv82GiP/NRsu/y8hcP8sI4T/MB5Z/zAdSv8mI6H/JiOc/ywfbP8vHEz/JiGW/zQaKv83GRv/Nxkc/zcZHP83GRz/Nxkc/zcZHP82GRz/Nxkc/zYZHP83GRz/Nxkc/zYZHP83GRz/Nxkc/zcZGv8yJX3/MSeR/zUbNf8uKrL/NB5K/zYaJv8tJpb/LCaY/y4hdv8pJqT/LiFy/y4eX/8sH3D/NBou/zQaK/8mIpn/MRxC/zcZGv83GRz/Nxkc/zcZHP83GRz/Nxkc/zcZHP82GBv/Nhgb/zYYG/82GRz/Nhkc/zYZHP82GRz/Nxkb/zIplP8zJnr/NB5I/y8ss/81Giz/Mx9P/y0qrv81GzD/NxgX/zEeUf8pKLD/LSN//y0iev8tInn/LCF9/yclq/8wHU3/NxgZ/zcZHP83GRz/Nxkc/zcZHP83GRz/Nhkc/zYYG/82GBv/Nhgc/zYZHP82GBz/Nhgb/zYYG/82GR//Miyi/zIrnf80IVv/MS62/zUbLP8zH0//Lyyy/zUbMf82GBf/Mh9U/ysqtP8uI4D/LiJ7/y0iev8tIXn/Lh9r/zQaK/82GBv/Nhgb/zYYHP82GRz/Nhkc/zYYHP82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/NhgZ/zUfSf8yM8X/MjHC/zIrmv8xMLv/NCBO/zUZJv8xKp//MCul/zElgP8uK7H/MSNz/zYYGf82GBf/NhgY/zUaK/8zHUL/Nhgc/zYYG/82GBv/Nhgc/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBn/NSBL/zM0yf8yM8X/MyiB/zMqkf8yLaP/Nhok/zUbL/8yJXr/MSiQ/zIiY/81GSH/NRst/zMfUv80HDX/Mxw+/zEiaP82GSD/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GR//NSJb/zQpiv81I1z/NRw5/zIwuf8zLJr/NRw3/zYYGv80H0n/MimS/zMmfP8wK6j/Lyy4/y8qrv80HT7/Nhke/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBb/NSFS/zMzyP81Ilf/NR09/zIuqP8yMsT/Myh//zEtpf8xLrP/MDLP/zInh/80HDn/MCyx/zMiZv82GBj/Nhgb/zYYG/82GBv/Nxgb/zYYG/82GBv/Nxgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GR7/NSh//zQ0zf81JWr/NRsu/zQhVf80I2L/MyeE/zExxf8yLar/NB1D/zInh/8wL7v/NB1A/zYYGf82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYGv82GR//NSZv/zQ0yv80MLL/NSZy/zUgT/81IVP/MyiI/zIsnf8xMLz/MS6v/zQfSv82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBr/NR07/zUogv80MLX/NDLE/zQyxf8zMb3/Myyj/zQjZ/81Gin/NhgZ/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBn/NhgZ/zUZIv82Gy//NRw0/zUaK/82GB7/NhgY/zYYGv82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/83GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYGv82GBr/Nhga/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/NRgb/zUYG/81GBv/NRgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zUYG/81GBv/NRgb/zYYG/81GBv/Nhgb/zYYG/81GBv/NRgb/zUYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/81GBv/NRgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/82GBv/Nhgb/zYYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/82GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/NRgb/zYZG/81GBv/NRgb/zUYG/81GBv/NRgb/zUZG/81GBv/NRgb/zUYG/81GBv/NRgb/zUYG/81GBv/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+# FIX #9: Match parent module brand colors
+BRAND_NAVY = "#090d26"
+BRAND_RED = "#f0541c"
+BRAND_SURFACE = "#f6f7fb"
+BRAND_WHITE = "#ffffff"
+
+DEFAULT_GROUPS = (
+    "gfh telecom arizona, gfh telecom houston, gfh telecom louisiana, "
+    "gfh telecom colorado west, gfh telecom colorado east, gfh telecom tennessee, "
+    "mrc, all district managment 2.0, gfh inventory, bo reportin issues, boost boys"
+)
+
+# FIX #10: Tesseract path with multiple fallbacks
+_TESSERACT_CANDIDATES = [
+    os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs",
+                 "Tesseract-OCR", "tesseract.exe"),
+    os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs",
+                 "Tesseract-OCR", "tesseract.exe"),
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+]
+def _is_tesseract_installed():
+    """True when a usable tesseract binary already exists on this machine."""
+    if shutil.which("tesseract"):
+        return True
+    return any(os.path.isfile(p) for p in _TESSERACT_CANDIDATES)
+
+
+def _locate_tesseract():
+    """Return the best known path to tesseract.exe (first match wins)."""
+    for p in _TESSERACT_CANDIDATES:
+        if os.path.isfile(p):
+            return p
+    found = shutil.which("tesseract")
+    return found if found else _TESSERACT_CANDIDATES[0]
+
+
+pytesseract.pytesseract.tesseract_cmd = _locate_tesseract()
+
+WA_USER_DATA_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA", ""), "VidaPay_WA_Profile", "User Data"
+)
+
+CRM_MAIN_PANEL_URL = "https://www.vidapaycrm.com/Main%20Panel.aspx"
+CRM_LOGIN_URL = "https://www.vidapaycrm.com/Login.aspx"
+
+# ----------------------------------------------------------------------------
+# GFH THEME PALETTES (light / dark) - brand: deep navy + signal red
+# ----------------------------------------------------------------------------
+THEMES = {
+    "light": {
+        "bg": "#f6f7fb",
+        "panel": "#ffffff",
+        "panel_alt": "#eef0f6",
+        "text": "#16213a",
+        "text_dim": "#5b6478",
+        "input": "#ffffff",
+        "border": "#d5d9e5",
+        "navy": "#090d26",
+        "red": "#f0541c",
+        "log_bg": "#0f1830",
+        "log_fg": "#e2e8f0",
+    },
+    "dark": {
+        "bg": "#0b1020",
+        "panel": "#141b38",
+        "panel_alt": "#1c2447",
+        "text": "#e8ecf7",
+        "text_dim": "#9aa4c0",
+        "input": "#1c2447",
+        "border": "#2b3561",
+        "navy": "#090d26",
+        "red": "#f0541c",
+        "log_bg": "#05070f",
+        "log_fg": "#cbd5e1",
+    },
+}
+
+
+# ----------------------------------------------------------------------------
+# OCR DEPENDENCY AUTO-SETUP (Tesseract + Ghostscript + Python packages)
+# ----------------------------------------------------------------------------
+TESSERACT_URL = (
+    "https://digi.bib.uni-mannheim.de/tesseract/"
+    "tesseract-ocr-w64-setup-5.3.3.20231005.exe"
+)
+# import name -> pip distribution name
+PIP_DEPENDENCIES = {
+    "selenium": "selenium",
+    "PIL": "pillow",
+    "pytesseract": "pytesseract",
+    "schedule": "schedule",
+    "pandas": "pandas",
+    "openpyxl": "openpyxl",
+}
+
+
+def _tool_on_path(name):
+    return shutil.which(name) is not None
+
+
+def _safe_print(*args):
+    """print() that never raises (sys.stdout is None in windowed exes)."""
+    try:
+        print(*args)
+    except Exception:
+        pass
+
+
+def _pip_cmd():
+    """Return a pip command usable in this Python, even inside a frozen
+    PyInstaller exe where sys.executable points at the exe itself."""
+    if getattr(sys, "frozen", False):
+        for cand in ("python", "python3", "py"):
+            found = shutil.which(cand)
+            if found:
+                return [found, "-m", "pip"]
+        return None
+    return [sys.executable, "-m", "pip"]
+
+
+def _missing_python_packages():
+    return [mod for mod in PIP_DEPENDENCIES
+            if importlib.util.find_spec(mod) is None]
+
+
+def _run_cmd_quiet(cmd, timeout=300):
+    """Run a command and return (ok, output). Never raises."""
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout
+        )
+        output = ((proc.stdout or "") + (proc.stderr or "")).strip()
+        return proc.returncode == 0, output
+    except Exception as e:
+        return False, str(e)
+
+
+def _download_file(url, dest, log, timeout=240):
+    try:
+        log("Downloading %s ..." % os.path.basename(url))
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp, open(
+            dest, "wb"
+        ) as out:
+            shutil.copyfileobj(resp, out)
+        return os.path.isfile(dest) and os.path.getsize(dest) > 0
+    except Exception as e:
+        log("Download failed: %s" % e)
+        return False
+
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_config(data):
+    try:
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        _safe_print(f"Error saving config: {e}")
+
+
+def encode_pw(pw):
+    return base64.b64encode(pw.encode()).decode() if pw else ""
+
+
+def decode_pw(pw):
+    try:
+        return base64.b64decode(pw.encode()).decode() if pw else ""
+    except Exception:
+        return ""
+
+
+# ============================================================================
+# BOT LOGIC (WhatsApp & CRM)
+# ============================================================================
+
+
+def _inject_anti_detection(driver):
+    """Remove webdriver flag so VidaPay / Cloudflare don't block the browser."""
+    try:
+        driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {
+                "source": """
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined, configurable: true
+                    });
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5], configurable: true
+                    });
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['en-US', 'en'], configurable: true
+                    });
+                    window.chrome = { runtime: {} };
+                """
+            }
+        )
+    except Exception:
+        pass
+
+
+def _is_human_verification_page(driver):
+    """Detect Cloudflare / reCAPTCHA / Turnstile pages."""
+    try:
+        body_text = (driver.find_element(By.TAG_NAME, "body").text or "").lower()
+        markers = [
+            "verify you are human", "verify human", "confirm you are human",
+            "checking your browser", "security check", "cloudflare",
+            "cf-turnstile", "turnstile", "i'm not a robot", "not a robot",
+            "recaptcha",
+        ]
+        if any(m in body_text for m in markers):
+            return True
+        return bool(
+            driver.execute_script(
+                """
+                function vis(el) {
+                    if (!el) return false;
+                    const s = window.getComputedStyle(el);
+                    const r = el.getBoundingClientRect();
+                    return s.display!=='none' && s.visibility!=='hidden'
+                           && s.opacity!=='0' && r.width>0 && r.height>0
+                           && el.getClientRects().length>0;
+                }
+                const bt = (document.body && document.body.innerText || '').toLowerCase();
+                const hv = bt.includes('verify') || bt.includes('human')
+                          || bt.includes('cloudflare') || bt.includes('robot');
+                const cb = Array.from(document.querySelectorAll(
+                    'input[type="checkbox"]')).some(vis);
+                const ts = !!document.querySelector(
+                    '[name="cf-turnstile-response"], .cf-turnstile, '
+                    + 'iframe[src*="turnstile"], iframe[src*="cloudflare"]');
+                const rc = !!document.querySelector(
+                    'iframe[src*="recaptcha"], .g-recaptcha, '
+                    + '#recaptcha-anchor, #rc-anchor-container');
+                return (cb && hv) || ts || rc;
+                """
+            )
+        )
+    except Exception:
+        return False
+
+
+def _wait_for_human_verification_clear(driver, log, timeout=300):
+    """Block until human verification page is gone or timeout."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _is_human_verification_page(driver):
+            return True
+        log("Human verification detected. Please complete it in the browser...")
+        time.sleep(3)
+    return False
+
+
+class VidapayTransferSystem:
+    """Standalone CRM logic for Inventory Reassignment with proper login flow."""
+
+    def __init__(self, account_id, username, password, log_callback, stop_event):
+        self.account_id = account_id
+        self.username = username
+        self.password = password
+        self.log = log_callback
+        self.stop_event = stop_event
+        self.driver = None
+        self.wait = None
+
+    def should_stop(self):
+        return self.stop_event.is_set()
+
+    def start_browser_and_login(self):
+        self.log("Starting Edge Browser for CRM...")
+        try:
+            # FIX #8: Anti-detection and proper options
+            options = Options()
+            options.add_argument("--start-maximized")
+            options.add_argument("--disable-notifications")
+            options.add_argument("--no-first-run")
+            options.add_argument("--no-default-browser-check")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            options.add_experimental_option("useAutomationExtension", False)
+            options.add_experimental_option("detach", True)
+            # Shared persistent profile: WhatsApp Web runs in this exact same
+            # browser session (and keeps its login state) as VidaPay.
+            options.add_argument(f"--user-data-dir={WA_USER_DATA_DIR}")
+            options.add_argument("--profile-directory=Default")
+
+            self.driver = webdriver.Edge(options=options)
+            _inject_anti_detection(self.driver)
+            self.wait = WebDriverWait(self.driver, 30)
+            # Record the VidaPay tab; WhatsApp Web opens next to it in a
+            # second tab of this same browser window.
+            self.main_window = self.driver.current_window_handle
+
+            self.log("Navigating to VidaPay Login...")
+            self.driver.get(CRM_LOGIN_URL)
+            time.sleep(3)
+
+            if self.should_stop():
+                return False
+
+            # If already logged in, skip login form
+            if self._is_main_panel_ready():
+                self.log("Already logged in. Continuing.")
+                return True
+
+            # FIX #1: Correct element IDs matching the real VidaPay CRM
+            account_field = self.wait.until(
+                EC.presence_of_element_located((By.ID, "AccountId"))
+            )
+            username_field = self.driver.find_element(By.ID, "Username")
+            password_field = self.driver.find_element(By.ID, "Password")
+
+            account_field.clear()
+            account_field.send_keys(self.account_id)
+            self.log(f"Account ID entered: {self.account_id}")
+
+            username_field.clear()
+            username_field.send_keys(self.username)
+            self.log(f"Username entered: {self.username}")
+
+            password_field.clear()
+            password_field.send_keys(self.password)
+            self.log("Password entered.")
+
+            time.sleep(1)
+
+            # FIX #1: Correct login button selectors
+            login_btn = None
+            for selector in ["#LoginButton", "input[type='submit']", "button[type='submit']"]:
+                try:
+                    candidate = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if candidate.is_displayed() and candidate.is_enabled():
+                        login_btn = candidate
+                        break
+                except Exception:
+                    continue
+
+            if login_btn:
+                login_btn.click()
+                self.log("Login button clicked.")
+            else:
+                password_field.send_keys(Keys.RETURN)
+                self.log("Enter key submitted login form.")
+
+            if self.should_stop():
+                return False
+
+            # FIX #2: Proper sign-in flow handling
+            return self._complete_signin_flow()
+
+        except Exception as e:
+            self.log(f"CRM Login failed: {e}")
+            return False
+
+    # ------------------------------------------------------------------
+    # Sign-in flow (mirrors parent module's complete_vidapay_signin_flow)
+    # ------------------------------------------------------------------
+
+    def _is_main_panel_ready(self):
+        try:
+            url = (self.driver.current_url or "").lower()
+            if "main%20panel" in url or "main panel" in url:
+                return True
+            body = (self.driver.find_element(By.TAG_NAME, "body").text or "")
+            return "main panel" in body.lower()
+        except Exception:
+            return False
+
+    def _get_visible_h3_texts(self):
+        try:
+            h3s = self.driver.find_elements(By.TAG_NAME, "h3")
+            return [h3.text.strip() for h3 in h3s if h3.is_displayed() and h3.text.strip()]
+        except Exception:
+            return []
+
+    def _page_has_h3(self, text):
+        return any(text.lower() == t.lower() for t in self._get_visible_h3_texts())
+
+    def _click_new_sign_in_next(self):
+        try:
+            btn = self.driver.find_element(By.ID, "btnNext")
+            if btn.is_displayed():
+                btn.click()
+                return True
+        except Exception:
+            pass
+        try:
+            btns = self.driver.find_elements(By.CSS_SELECTOR, "input[type='submit']")
+            for b in btns:
+                if b.is_displayed() and b.is_enabled():
+                    b.click()
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _click_trust_radio(self):
+        try:
+            for el in self.driver.find_elements(By.ID, "trustRadio"):
+                if el.is_displayed():
+                    el.click()
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _click_setup_next(self, label_hint=""):
+        try:
+            btns = self.driver.find_elements(By.CSS_SELECTOR, "input[type='submit']")
+            for b in btns:
+                txt = (b.get_attribute("value") or "").strip()
+                if b.is_displayed() and b.is_enabled() and txt.lower() in ("next", "continue"):
+                    b.click()
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _click_ready_to_go_continue(self):
+        try:
+            btns = self.driver.find_elements(By.CSS_SELECTOR, "input[type='submit']")
+            for b in btns:
+                val = (b.get_attribute("value") or "").strip().lower()
+                if b.is_displayed() and b.is_enabled() and ("continue" in val or "ready" in val):
+                    b.click()
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _complete_signin_flow(self, timeout_seconds=420):
+        """Handle the full VidaPay post-login sign-in flow."""
+        self.log("Checking VidaPay sign-in state...")
+
+        started_at = time.time()
+        last_state = None
+        two_factor_logged = False
+        trust_clicked = False
+        setup_next_clicks = 0
+        ready_clicked = False
+
+        while time.time() - started_at < timeout_seconds:
+            if self.should_stop():
+                self.log("Sign-in flow stopped by user.")
+                return False
+
+            if self._is_main_panel_ready():
+                self.log("Main Panel detected. Logged in successfully.")
+                return True
+
+            # Human verification (Cloudflare / Turnstile / reCAPTCHA)
+            if _is_human_verification_page(self.driver):
+                self.log("Human verification detected during sign-in. Waiting...")
+                _wait_for_human_verification_clear(self.driver, self.log)
+                continue
+
+            h3_texts = self._get_visible_h3_texts()
+            current_state = " | ".join(h3_texts) if h3_texts else "No known heading"
+            if current_state != last_state:
+                self.log(f"Sign-in state: {current_state}")
+                last_state = current_state
+
+            if self._page_has_h3("New Sign In"):
+                self.log("New Sign In page detected.")
+                if self._click_new_sign_in_next():
+                    time.sleep(3)
+                    continue
+
+            # Trust This Device
+            trust_radio_visible = False
+            try:
+                trust_radio_visible = any(
+                    el.is_displayed()
+                    for el in self.driver.find_elements(By.ID, "trustRadio")
+                )
+            except Exception:
+                pass
+
+            if trust_radio_visible and not trust_clicked:
+                self.log("Trust This Device page detected.")
+                if self._click_trust_radio():
+                    trust_clicked = True
+                    time.sleep(0.5)
+                    if self._click_setup_next("Trust This Device Next"):
+                        setup_next_clicks += 1
+                        time.sleep(3)
+                        continue
+
+            # Additional setup pages after trust
+            if trust_clicked and setup_next_clicks < 3:
+                if self._click_setup_next("Additional setup Next"):
+                    setup_next_clicks += 1
+                    time.sleep(3)
+                    continue
+
+            # Ready to Go
+            if self._page_has_h3("Ready to Go") or not ready_clicked:
+                if self._click_ready_to_go_continue():
+                    ready_clicked = True
+                    time.sleep(5)
+                    continue
+
+            # 2FA
+            if self._page_has_h3("2-Factor Authentication"):
+                if not two_factor_logged:
+                    self.log(
+                        "2-Factor Authentication detected. "
+                        "Please approve in IBM Verify / authenticator app."
+                    )
+                    two_factor_logged = True
+                time.sleep(2)
+                continue
+
+            # If we've been looping with no state change, just wait
+            time.sleep(2)
+
+        self.log("Sign-in flow timed out.")
+        return False
+
+    # ------------------------------------------------------------------
+    # Transfer logic
+    # ------------------------------------------------------------------
+
+    def _focus_main_window(self):
+        """Bring the VidaPay tab back to the foreground."""
+        try:
+            if (
+                getattr(self, "main_window", None)
+                and self.main_window in self.driver.window_handles
+            ):
+                self.driver.switch_to.window(self.main_window)
+        except Exception:
+            pass
+
+    def navigate_to_transfer_tool(self):
+        self.log("Navigating to Inventory Reassignment Tool...")
+        try:
+            # WhatsApp tab may be the active one right now
+            self._focus_main_window()
+            self.driver.get(
+                "https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
+            )
+            self.wait.until(
+                EC.presence_of_element_located(
+                    (By.ID, "ctl00_MainContent_rcbAccount_Input")
+                )
+            )
+            time.sleep(2)
+            return True
+        except Exception as e:
+            self.log(f"Failed to navigate to Transfer Tool: {e}")
+            return False
+
+    def execute_transfer(self, target_account_id, imeis):
+        if not imeis:
+            self.log("No IMEIs to transfer. Skipping.")
+            return False
+
+        self.log(
+            f"Initiating transfer to Account ID: {target_account_id} "
+            f"for {len(imeis)} devices."
+        )
+
+        try:
+            # 1. Enter Target Account ID
+            account_input = self.wait.until(
+                EC.element_to_be_clickable(
+                    (By.ID, "ctl00_MainContent_rcbAccount_Input")
+                )
+            )
+            account_input.clear()
+            account_input.send_keys(target_account_id)
+            time.sleep(1)
+            account_input.send_keys(Keys.ENTER)
+            time.sleep(3)
+
+            # 2. Enter IMEIs
+            sim_input = self.driver.find_element(By.ID, "MainContent_txtSimEntry")
+            add_btn = self.driver.find_element(By.ID, "MainContent_btnAddSimEntry")
+
+            for imei in imeis:
+                if self.should_stop():
+                    self.log("Process stopped by user.")
+                    return False
+
+                # FIX #5: Retry loop for StaleElementReferenceException
+                for _attempt in range(3):
+                    try:
+                        sim_input.clear()
+                        sim_input.send_keys(imei)
+                        time.sleep(0.5)
+                        self.driver.execute_script(
+                            "arguments[0].click();", add_btn
+                        )
+                        time.sleep(1)
+                        self.log(f"Added IMEI to batch: {imei}")
+                        break
+                    except StaleElementReferenceException:
+                        self.log(
+                            f"Stale element for IMEI {imei}, re-fetching..."
+                        )
+                        sim_input = self.driver.find_element(
+                            By.ID, "MainContent_txtSimEntry"
+                        )
+                        add_btn = self.driver.find_element(
+                            By.ID, "MainContent_btnAddSimEntry"
+                        )
+                        time.sleep(1)
+                else:
+                    self.log(f"Failed to add IMEI {imei} after retries.")
+                    return False
+
+            # 3. Proceed to Next
+            next_btn = self.driver.find_element(By.ID, "MainContent_btnNext")
+            self.driver.execute_script("arguments[0].click();", next_btn)
+            time.sleep(2)
+
+            # 4. Submit Transfer
+            submit_btn = self.wait.until(
+                EC.element_to_be_clickable((By.ID, "MainContent_submitButton"))
+            )
+            self.driver.execute_script("arguments[0].click();", submit_btn)
+            self.log(
+                f"Transfer submitted successfully to {target_account_id}."
+            )
+            time.sleep(3)
+            return True
+
+        except Exception as e:
+            self.log(f"Error during CRM transfer: {e}")
+            return False
+
+
+class WhatsAppScraper:
+    def __init__(self, raw_groups, log_callback, stop_event):
+        if isinstance(raw_groups, str):
+            self.groups = [g.strip() for g in raw_groups.split(",") if g.strip()]
+        else:
+            self.groups = list(raw_groups)
+        self.log = log_callback
+        self.stop_event = stop_event
+        self.driver = None
+        # Whether this scraper launched its own browser (True) or is reusing
+        # the browser session already opened for VidaPay (False).
+        self.owns_driver = False
+
+    def _wa_page_state(self):
+        """Return a string describing what WhatsApp Web is showing right now.
+
+        Possible return values:
+          'qr'          - QR code visible, needs scan
+          'loading'     - page still loading / spinner
+          'logged_in'   - chat list visible, ready to go
+          'unknown'     - could not determine state
+        """
+        try:
+            return self.driver.execute_script("""
+                // 1. Check for QR code (drawn on <canvas> in the login pane)
+                const canvases = document.querySelectorAll('canvas');
+                for (const c of canvases) {
+                    if (c.offsetWidth > 80 && c.offsetHeight > 80) {
+                        const parentVisible = c.closest('[class]') &&
+                            getComputedStyle(c.closest('[class]')).display !== 'none';
+                        if (parentVisible) return 'qr';
+                    }
+                }
+
+                // 2. Check for loading spinner (WhatsApp uses a specific SVG spinner)
+                const spinners = document.querySelectorAll(
+                    'svg[role="img"], div[role="progressbar"], '
+                  + 'div[class*="spinner"], div[class*="loading"]'
+                );
+                for (const s of spinners) {
+                    if (s.offsetWidth > 0 && s.offsetHeight > 0) return 'loading';
+                }
+
+                // 3. Check for the chat list / sidebar (evidence of being logged in)
+                // WhatsApp renders chat items as divs with role="listitem" or
+                // inside a scrollable panel.  Also look for the app header bar.
+                const chatItems = document.querySelectorAll(
+                    '[data-id], [role="listitem"]'
+                );
+                const header = document.querySelector(
+                    'header, [class*="header"][class*="app"]'
+                );
+                // Must have at least 1 chat item AND a visible header
+                if (chatItems.length > 0 && header
+                    && header.offsetWidth > 0) {
+                    return 'logged_in';
+                }
+
+                // 4. Fallback: any contenteditable div means the UI rendered
+                const editables = document.querySelectorAll('[contenteditable="true"]');
+                if (editables.length > 0) {
+                    // No QR, no spinner, has editables => probably logged in
+                    return 'logged_in';
+                }
+
+                return 'unknown';
+            """)
+        except Exception:
+            return 'unknown'
+
+    def _wa_find_search_box_js(self):
+        """Use JavaScript to locate the search input.  Much more resilient
+        than hardcoded XPath because it inspects the live DOM structure."""
+        return self.driver.execute_script("""
+            // Strategy 1: contenteditable inside a header or search panel
+            const candidates = document.querySelectorAll(
+                'header [contenteditable="true"], '
+              + '[class*="search"] [contenteditable="true"], '
+              + 'div[contenteditable="true"][data-tab], '
+              + 'div[contenteditable="true"][title], '
+              + 'div[contenteditable="true"][aria-label]'
+            );
+            for (const el of candidates) {
+                if (el.offsetWidth > 0 && el.offsetHeight > 0
+                    && getComputedStyle(el).display !== 'none'
+                    && getComputedStyle(el).visibility !== 'hidden') {
+                    return el;
+                }
+            }
+
+            // Strategy 2: ANY visible contenteditable div (broadest fallback)
+            const all = document.querySelectorAll('[contenteditable="true"]');
+            for (const el of all) {
+                if (el.offsetWidth > 0 && el.offsetHeight > 0
+                    && getComputedStyle(el).display !== 'none'
+                    && getComputedStyle(el).visibility !== 'hidden'
+                    && el.tagName === 'DIV') {
+                    // Prefer the one that is closest to the top of the page
+                    // (the search box is in the header, not the message composer)
+                    const rect = el.getBoundingClientRect();
+                    if (rect.top < 200) return el;
+                }
+            }
+
+            return null;
+        """)
+
+    def start_whatsapp(self, shared_driver=None):
+        self.log("Starting WhatsApp Web...")
+
+        # Same-browser mode: reuse the browser session already opened for
+        # VidaPay instead of launching a second, separate browser.
+        if shared_driver is not None:
+            self.driver = shared_driver
+            self.owns_driver = False
+            self.wait = WebDriverWait(self.driver, 30)
+            # Open WhatsApp Web in a SECOND TAB of the same browser window so
+            # the VidaPay tab stays open and both sites run at the same time.
+            self.log(
+                "Opening WhatsApp Web in a new tab of the same browser "
+                "(the VidaPay tab stays open)..."
+            )
+            self.driver.execute_script("window.open('about:blank');")
+            self.driver.switch_to.window(self.driver.window_handles[-1])
+            self.wa_window = self.driver.current_window_handle
+            self.driver.get("https://web.whatsapp.com")
+            return self._wait_for_whatsapp_session()
+
+        # Standalone mode: launch a dedicated browser for WhatsApp.
+        self.owns_driver = True
+        options = Options()
+        options.add_argument(f"--user-data-dir={WA_USER_DATA_DIR}")
+        options.add_argument("--profile-directory=Default")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
+        options.add_experimental_option("detach", True)
+
+        try:
+            self.driver = webdriver.Edge(options=options)
+            _inject_anti_detection(self.driver)
+            self.wait = WebDriverWait(self.driver, 30)
+            self.wa_window = self.driver.current_window_handle
+            self.driver.get("https://web.whatsapp.com")
+            return self._wait_for_whatsapp_session()
+        except Exception as e:
+            self.log(f"WhatsApp initialization failed: {e}")
+            return False
+
+    def _wait_for_whatsapp_session(self):
+        self.log(
+            "Waiting for WhatsApp Web session/login (up to 120s)..."
+        )
+        start_time = time.time()
+        last_logged_state = ""
+        qr_seen = False
+
+        while time.time() - start_time < 120:
+            if self.stop_event.is_set():
+                return False
+
+            state = self._wa_page_state()
+
+            # Log state changes for diagnostics
+            if state != last_logged_state:
+                self.log(f"  WA page state: {state}")
+                last_logged_state = state
+
+            if state == "qr":
+                if not qr_seen:
+                    self.log(
+                        "QR code detected. Please scan it in the "
+                        "browser window that just opened."
+                    )
+                    qr_seen = True
+                time.sleep(3)
+                continue
+
+            if state == "loading":
+                time.sleep(2)
+                continue
+
+            if state == "logged_in":
+                # Found the page, now locate the search box
+                search_box = self._wa_find_search_box_js()
+                if search_box:
+                    self.log(
+                        "WhatsApp Web authenticated and search box found."
+                    )
+                    return True
+                # Logged in but search box not found yet - rare, retry
+                self.log(
+                    "Logged in but search box not located yet, retrying..."
+                )
+                time.sleep(2)
+                continue
+
+            # state == 'unknown' - page still loading
+            time.sleep(2)
+
+        self.log("WhatsApp Web login timeout reached.")
+        # Diagnostic: dump page title and URL
+        try:
+            self.log(
+                f"  Page title: {self.driver.title}"
+            )
+            self.log(
+                f"  Page URL: {self.driver.current_url}"
+            )
+        except Exception:
+            pass
+        return False
+
+    def _find_search_box(self):
+        """Locate the search box (used by find_and_read_groups).
+        Reuses the JS-based finder from start_whatsapp."""
+        return self._wa_find_search_box_js()
+
+    def _focus_wa_window(self):
+        """Bring the WhatsApp tab back to the foreground."""
+        try:
+            if (
+                getattr(self, "wa_window", None)
+                and self.wa_window in self.driver.window_handles
+            ):
+                self.driver.switch_to.window(self.wa_window)
+                return True
+        except Exception:
+            pass
+        return False
+
+    def find_and_read_groups(self, mappings):
+        transfer_tasks = []
+
+        # Make sure the WhatsApp tab is the active one before scraping
+        self._focus_wa_window()
+
+        for group_name in self.groups:
+            if self.stop_event.is_set():
+                break
+
+            self.log(f"Searching for group: '{group_name}'")
+            try:
+                search_box = self._find_search_box()
+
+                if not search_box:
+                    self.log(
+                        f"Could not find search box for group '{group_name}'"
+                    )
+                    continue
+
+                # Clear existing search text and type group name
+                self.driver.execute_script(
+                    "arguments[0].focus();", search_box
+                )
+                time.sleep(0.3)
+                search_box.send_keys(Keys.CONTROL + "a")
+                search_box.send_keys(Keys.BACKSPACE)
+                time.sleep(0.5)
+                search_box.send_keys(group_name)
+                time.sleep(2.5)
+                search_box.send_keys(Keys.ENTER)
+                time.sleep(3)
+
+                messages = self.driver.find_elements(
+                    By.CSS_SELECTOR, "div.message-in"
+                )
+                self.log(
+                    f"[{group_name}] Found {len(messages)} recent incoming messages."
+                )
+
+                for msg in messages:
+                    if self.stop_event.is_set():
+                        break
+
+                    text_content = msg.text.lower()
+                    if "transfer" in text_content:
+                        target_account = None
+                        target_store = None
+                        for store_name, acc_id in mappings.items():
+                            if store_name.lower() in text_content:
+                                target_account = acc_id
+                                target_store = store_name
+                                break
+
+                        if target_account:
+                            self.log(
+                                f"Transfer request detected in '{group_name}' "
+                                f"for '{target_store}' -> Account: {target_account}"
+                            )
+                            img_path = os.path.join(
+                                os.environ.get("TEMP", ""), "wa_msg_temp.png"
+                            )
+                            msg.screenshot(img_path)
+
+                            imeis = self._extract_imeis_from_image(img_path)
+                            if imeis:
+                                self.log(
+                                    f"Extracted {len(imeis)} IMEIs via OCR."
+                                )
+                                transfer_tasks.append({
+                                    "group": group_name,
+                                    "store": target_store,
+                                    "account_id": target_account,
+                                    "imeis": imeis,
+                                })
+                            else:
+                                self.log(
+                                    "No valid IMEIs found in the message image."
+                                )
+
+                search_box.send_keys(Keys.ESCAPE)
+                time.sleep(1)
+
+            except Exception as e:
+                self.log(f"Error scanning group '{group_name}': {e}")
+
+        return transfer_tasks
+
+    def _extract_imeis_from_image(self, img_path):
+        try:
+            # FIX #6: Preprocess image for better OCR accuracy
+            img = Image.open(img_path)
+            img = img.convert("L")  # grayscale
+            img = img.resize(
+                (img.width * 2, img.height * 2), Image.Resampling.LANCZOS
+            )
+
+            # FIX #6: Use Tesseract config for better results
+            custom_config = r"--oem 3 --psm 6"
+            text = pytesseract.image_to_string(img, config=custom_config)
+
+            # FIX #7: Also search stripped text for OCR output with spaces/dashes
+            cleaned = re.sub(r"[\s\-\.]+", "", text)
+            imeis_from_cleaned = re.findall(r"(?:35|01)\d{13}", cleaned)
+            imeis_from_raw = re.findall(r"\b(?:35|01)\d{13}\b", text)
+            all_imeis = list(set(imeis_from_cleaned + imeis_from_raw))
+            return all_imeis
+        except Exception as e:
+            self.log(f"OCR Error: {e}")
+            return []
+
+    def close(self):
+        # Only quit the browser if this scraper launched it. When reusing the
+        # VidaPay browser session, quitting here would kill the shared window.
+        if self.driver and self.owns_driver:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+            finally:
+                self.driver = None
+
+
+# ============================================================================
+# GUI APPLICATION
+# ============================================================================
+
+
+class VidaPayTransferApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("VidaPay Inventory Transfer Bot (Standalone)")
+        self.geometry("1020x850")
+        self.configure(bg=BRAND_SURFACE)
+
+        self.stop_event = threading.Event()
+        self.log_queue = queue.Queue()
+        self.scheduler_running = False
+        self.scheduler_thread = None
+        self.retained_driver = None
+
+        self.config_data = load_config()
+        self.mappings = self.config_data.get("transfer_mappings", {})
+        self.wa_group = self.config_data.get(
+            "transfer_wa_group", DEFAULT_GROUPS
+        )
+        self.schedule_times = self.config_data.get(
+            "transfer_schedule", "09:00, 14:00, 17:00"
+        )
+        self.history = self.config_data.get("transfer_history", [])
+
+        # GFH theme: 'system' follows Windows, otherwise explicit light/dark
+        self.theme_setting = str(
+            self.config_data.get("theme", "system")
+        ).lower()
+        if self.theme_setting not in ("system", "light", "dark"):
+            self.theme_setting = "system"
+        self.colors = THEMES[self._resolve_theme()]
+
+        self.images = {}
+        self._load_brand_assets()
+
+        self._build_ui()
+        self._apply_theme()
+        self.after(100, self._process_log_queue)
+        # Check-and-install OCR dependencies in the background
+        threading.Thread(target=self._auto_setup_deps, daemon=True).start()
+
+    def _build_ui(self):
+        # ---- GFH header: logo, title, theme selector ----
+        header = tk.Frame(self, height=84, bg=self.colors["navy"])
+        header.pack(fill=tk.X)
+        header._tag = "header"
+
+        head_row = tk.Frame(header, bg=self.colors["navy"])
+        head_row.pack(fill=tk.X, padx=18, pady=(10, 8))
+        head_row._tag = "header"
+
+        if self.images.get("logo"):
+            logo_lbl = tk.Label(head_row, image=self.images["logo"], bd=0)
+            logo_lbl.image = self.images["logo"]
+            logo_lbl.pack(side=tk.LEFT, padx=(0, 14))
+            logo_lbl._tag = "header_label"
+
+        title_col = tk.Frame(head_row, bg=self.colors["navy"])
+        title_col.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        title_col._tag = "header"
+        title_lbl = tk.Label(
+            title_col,
+            text="GFH Inventory Transfer Bot",
+            font=("Segoe UI", 18, "bold"),
+            fg="#ffffff",
+            bg=self.colors["navy"],
+        )
+        title_lbl.pack(anchor="w")
+        title_lbl._tag = "header_label"
+        sub_lbl = tk.Label(
+            title_col,
+            text="VidaPay Reassignment  \u00b7  WhatsApp OCR Extractor",
+            font=("Segoe UI", 10),
+            fg="#c8cdf0",
+            bg=self.colors["navy"],
+        )
+        sub_lbl.pack(anchor="w")
+        sub_lbl._tag = "header_label"
+
+        theme_box = tk.Frame(head_row, bg=self.colors["navy"])
+        theme_box.pack(side=tk.RIGHT)
+        theme_box._tag = "header"
+        theme_lbl = tk.Label(
+            theme_box,
+            text="Theme",
+            font=("Segoe UI", 9, "bold"),
+            fg="#c8cdf0",
+            bg=self.colors["navy"],
+        )
+        theme_lbl.pack(side=tk.LEFT, padx=(0, 8))
+        theme_lbl._tag = "header_label"
+        self.theme_combo = ttk.Combobox(
+            theme_box,
+            values=["System", "Light", "Dark"],
+            state="readonly",
+            width=9,
+            font=("Segoe UI", 9),
+        )
+        order = {"system": 0, "light": 1, "dark": 2}
+        self.theme_combo.current(order.get(self.theme_setting, 0))
+        self.theme_combo.bind("<<ComboboxSelected>>", self._on_theme_change)
+        self.theme_combo.pack(side=tk.LEFT)
+
+        # ---- Body ----
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        self.tab_config = ttk.Frame(self.notebook)
+        self.tab_history = ttk.Frame(self.notebook)
+
+        self.notebook.add(
+            self.tab_config, text="  Transfer Configuration "
+        )
+        self.notebook.add(
+            self.tab_history, text="  Transfer Logs "
+        )
+
+        self._build_config_tab()
+        self._build_history_tab()
+
+        bottom_frame = tk.Frame(self, bg=self.colors["bg"])
+        bottom_frame.pack(fill=tk.X, padx=20, pady=10)
+
+        ctrl_frame = tk.Frame(bottom_frame, bg=self.colors["bg"])
+        ctrl_frame.pack(fill=tk.X, pady=5)
+
+        self.btn_run = self._make_btn(
+            ctrl_frame,
+            text="Run Now",
+            icon_key="play",
+            bg=self.colors["red"],
+            fg="#ffffff",
+            command=self.run_manual,
+            tag="run",
+        )
+        self.btn_run.pack(side=tk.LEFT, padx=5)
+
+        self.btn_sched = self._make_btn(
+            ctrl_frame,
+            text="Start Scheduler",
+            icon_key="clock",
+            bg=self.colors["navy"],
+            fg="#ffffff",
+            command=self.toggle_scheduler,
+            tag="sched",
+        )
+        self.btn_sched.pack(side=tk.LEFT, padx=5)
+
+        self.btn_stop = self._make_btn(
+            ctrl_frame,
+            text="Stop",
+            icon_key="stop",
+            bg="#6b7280",
+            fg="#ffffff",
+            command=self.stop_bot,
+            tag="stop",
+            state=tk.DISABLED,
+        )
+        self.btn_stop.pack(side=tk.LEFT, padx=5)
+
+        self.log_area = scrolledtext.ScrolledText(
+            bottom_frame,
+            height=10,
+            font=("Consolas", 9),
+            bg=self.colors["log_bg"],
+            fg=self.colors["log_fg"],
+            insertbackground=self.colors["log_fg"],
+        )
+        self.log_area.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        self.progress = ttk.Progressbar(
+            bottom_frame, mode="indeterminate"
+        )
+        self.progress.pack(fill=tk.X)
+
+    def _build_config_tab(self):
+        config_container = tk.Frame(self.tab_config)
+        config_container.pack(fill=tk.X, padx=10, pady=10)
+
+        cred_frame = ttk.LabelFrame(config_container, text="CRM Credentials")
+        cred_frame.pack(
+            side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5)
+        )
+
+        tk.Label(cred_frame, text="Account ID:").grid(
+            row=0, column=0, padx=10, pady=5, sticky=tk.W
+        )
+        self.entry_acc = ttk.Entry(cred_frame, width=25)
+        self.entry_acc.insert(0, self.config_data.get("crm_account", ""))
+        self.entry_acc.grid(row=0, column=1, padx=10, pady=5)
+
+        tk.Label(cred_frame, text="Username:").grid(
+            row=1, column=0, padx=10, pady=5, sticky=tk.W
+        )
+        self.entry_usr = ttk.Entry(cred_frame, width=25)
+        self.entry_usr.insert(
+            0, self.config_data.get("crm_username", "")
+        )
+        self.entry_usr.grid(row=1, column=1, padx=10, pady=5)
+
+        tk.Label(cred_frame, text="Password:").grid(
+            row=2, column=0, padx=10, pady=5, sticky=tk.W
+        )
+        self.entry_pwd = ttk.Entry(cred_frame, width=25, show="*")
+        self.entry_pwd.insert(
+            0, decode_pw(self.config_data.get("crm_password", ""))
+        )
+        self.entry_pwd.grid(row=2, column=1, padx=10, pady=5)
+
+        bot_frame = ttk.LabelFrame(
+            config_container, text="Bot & Schedule Settings"
+        )
+        bot_frame.pack(
+            side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0)
+        )
+
+        tk.Label(
+            bot_frame, text="WhatsApp Groups (comma-separated):"
+        ).grid(
+            row=0, column=0, padx=10, pady=2, sticky=tk.W
+        )
+        self.txt_wa_groups = scrolledtext.ScrolledText(
+            bot_frame, width=35, height=4, font=("Segoe UI", 9)
+        )
+        self.txt_wa_groups.insert(tk.END, self.wa_group)
+        self.txt_wa_groups.grid(
+            row=1, column=0, columnspan=2, padx=10, pady=2, sticky=tk.W
+        )
+
+        tk.Label(bot_frame, text="Schedule (HH:MM):").grid(
+            row=2, column=0, padx=10, pady=5, sticky=tk.W
+        )
+        self.entry_schedule = ttk.Entry(bot_frame, width=25)
+        self.entry_schedule.insert(0, self.schedule_times)
+        self.entry_schedule.grid(
+            row=2, column=1, padx=10, pady=5, sticky=tk.W
+        )
+
+        self.btn_save = self._make_btn(
+            bot_frame,
+            text="Save All Settings",
+            icon_key="save",
+            bg=self.colors["navy"],
+            fg="#ffffff",
+            command=self.save_settings,
+            width=None,
+            tag="sched",
+        )
+        self.btn_save.grid(row=3, column=0, columnspan=2, pady=6)
+
+        map_frame = ttk.LabelFrame(
+            self.tab_config, text="Store Name to Account ID Mappings"
+        )
+        map_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        entry_frame = tk.Frame(map_frame)
+        entry_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        tk.Label(entry_frame, text="Store Name:").pack(
+            side=tk.LEFT, padx=5
+        )
+        self.entry_map_store = ttk.Entry(entry_frame, width=25)
+        self.entry_map_store.pack(side=tk.LEFT, padx=5)
+
+        tk.Label(entry_frame, text="Account ID:").pack(
+            side=tk.LEFT, padx=5
+        )
+        self.entry_map_acc = ttk.Entry(entry_frame, width=20)
+        self.entry_map_acc.pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            entry_frame, text="Add Mapping", command=self.add_mapping
+        ).pack(side=tk.LEFT, padx=10)
+        ttk.Button(
+            entry_frame,
+            text="Remove Selected",
+            command=self.remove_mapping,
+        ).pack(side=tk.LEFT, padx=5)
+        ttk.Button(
+            entry_frame, text="Import Excel", command=self.import_excel
+        ).pack(side=tk.LEFT, padx=10)
+
+        cols = ("Store Name", "Account ID")
+        self.tree_map = ttk.Treeview(
+            map_frame, columns=cols, show="headings", height=8
+        )
+        for c in cols:
+            self.tree_map.heading(c, text=c)
+            self.tree_map.column(c, width=200)
+        self.tree_map.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        self.refresh_mappings_tree()
+
+    def _build_history_tab(self):
+        cols = ("Date", "Store", "Target Account", "IMEI Count", "Status")
+        self.tree_history = ttk.Treeview(
+            self.tab_history, columns=cols, show="headings"
+        )
+        for c in cols:
+            self.tree_history.heading(c, text=c)
+        self.tree_history.column("Date", width=150)
+        self.tree_history.column("Store", width=150)
+        self.tree_history.column("Target Account", width=120)
+        self.tree_history.column("IMEI Count", width=80, anchor=tk.CENTER)
+        self.tree_history.column("Status", width=250)
+        self.tree_history.pack(
+            fill=tk.BOTH, expand=True, padx=10, pady=10
+        )
+
+        self.refresh_history_tree()
+
+    # --- Data Management ---
+
+    def import_excel(self):
+        file_path = filedialog.askopenfilename(
+            title="Select Mappings File",
+            filetypes=[
+                ("Excel Files", "*.xlsx *.xls"),
+                ("CSV Files", "*.csv"),
+                ("All Files", "*.*"),
+            ],
+        )
+
+        if not file_path:
+            return
+
+        try:
+            import pandas as pd
+
+            if file_path.endswith(".csv"):
+                df = pd.read_csv(file_path, dtype=str)
+            else:
+                df = pd.read_excel(file_path, dtype=str)
+
+            if len(df.columns) < 2:
+                messagebox.showerror(
+                    "Import Error",
+                    "File must have at least 2 columns: Store Name and Account ID.",
+                )
+                return
+
+            imported_count = 0
+            for _index, row in df.iterrows():
+                store = str(row.iloc[0]).strip()
+                acc = str(row.iloc[1]).strip()
+
+                if (
+                    store
+                    and acc
+                    and store.lower() != "nan"
+                    and acc.lower() != "nan"
+                ):
+                    self.mappings[store] = acc
+                    imported_count += 1
+
+            self.config_data["transfer_mappings"] = self.mappings
+            save_config(self.config_data)
+            self.refresh_mappings_tree()
+
+            self.log_msg(
+                f"Successfully imported {imported_count} mappings from file."
+            )
+            messagebox.showinfo(
+                "Success", f"Imported {imported_count} mappings."
+            )
+
+        except ImportError:
+            messagebox.showerror(
+                "Dependency Error",
+                "Please run 'pip install pandas openpyxl' to enable Excel imports.",
+            )
+        except Exception as e:
+            messagebox.showerror(
+                "Import Error", f"An error occurred while importing:\n{e}"
+            )
+            self.log_msg(f"Import Error: {e}")
+
+    def save_settings(self):
+        self.config_data["crm_account"] = self.entry_acc.get().strip()
+        self.config_data["crm_username"] = self.entry_usr.get().strip()
+        self.config_data["crm_password"] = encode_pw(
+            self.entry_pwd.get().strip()
+        )
+        self.config_data["transfer_wa_group"] = (
+            self.txt_wa_groups.get("1.0", tk.END).strip()
+        )
+        self.config_data["transfer_schedule"] = (
+            self.entry_schedule.get().strip()
+        )
+
+        self.wa_group = self.config_data["transfer_wa_group"]
+        self.schedule_times = self.config_data["transfer_schedule"]
+        self.config_data["theme"] = self.theme_setting
+
+        save_config(self.config_data)
+        self.log_msg("Settings and Credentials saved securely to config.")
+
+    def add_mapping(self):
+        store = self.entry_map_store.get().strip()
+        acc = self.entry_map_acc.get().strip()
+        if store and acc:
+            self.mappings[store] = acc
+            self.config_data["transfer_mappings"] = self.mappings
+            save_config(self.config_data)
+            self.refresh_mappings_tree()
+            self.entry_map_store.delete(0, tk.END)
+            self.entry_map_acc.delete(0, tk.END)
+
+    def remove_mapping(self):
+        selected = self.tree_map.selection()
+        if not selected:
+            return
+        for item in selected:
+            store = self.tree_map.item(item, "values")[0]
+            if store in self.mappings:
+                del self.mappings[store]
+        self.config_data["transfer_mappings"] = self.mappings
+        save_config(self.config_data)
+        self.refresh_mappings_tree()
+
+    def refresh_mappings_tree(self):
+        for item in self.tree_map.get_children():
+            self.tree_map.delete(item)
+        for store, acc in self.mappings.items():
+            self.tree_map.insert("", tk.END, values=(store, acc))
+
+    def append_history(self, store, acc, count, status):
+        record = (
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            store,
+            acc,
+            count,
+            status,
+        )
+        self.history.append(record)
+        self.config_data["transfer_history"] = self.history[-100:]
+        save_config(self.config_data)
+        self.refresh_history_tree()
+
+    def refresh_history_tree(self):
+        for item in self.tree_history.get_children():
+            self.tree_history.delete(item)
+        for rec in reversed(self.history[-100:]):
+            self.tree_history.insert("", tk.END, values=rec)
+
+    # --- Logging & UI Updates ---
+
+    def log_msg(self, msg):
+        self.log_queue.put(
+            f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n"
+        )
+
+    def _process_log_queue(self):
+        try:
+            while True:
+                msg = self.log_queue.get_nowait()
+                self.log_area.insert(tk.END, msg)
+                self.log_area.see(tk.END)
+        except queue.Empty:
+            pass
+        self.after(100, self._process_log_queue)
+
+    # ------------------------------------------------------------------
+    # GFH Branding: logo, icons, themes
+    # ------------------------------------------------------------------
+
+    def _resolve_theme(self):
+        if self.theme_setting == "system":
+            return self._detect_system_theme()
+        return self.theme_setting
+
+    def _detect_system_theme(self):
+        """Follow the Windows light/dark mode when 'System' is selected."""
+        try:
+            import winreg
+
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            )
+            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            winreg.CloseKey(key)
+            return "light" if value else "dark"
+        except Exception:
+            return "light"
+
+    def _on_theme_change(self, _event=None):
+        choice = self.theme_combo.get().lower()
+        if choice in ("system", "light", "dark"):
+            self.theme_setting = choice
+            self.config_data["theme"] = choice
+            save_config(self.config_data)
+            self._apply_theme()
+
+    def _apply_theme(self):
+        self.colors = THEMES[self._resolve_theme()]
+        self.configure(bg=self.colors["bg"])
+        self._style_ttk()
+        self._theme_walk(self)
+
+    def _style_ttk(self):
+        c = self.colors
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("TFrame", background=c["bg"])
+        style.configure("TNotebook", background=c["bg"], borderwidth=0)
+        style.configure(
+            "TNotebook.Tab",
+            background=c["panel_alt"],
+            foreground=c["text_dim"],
+            font=("Segoe UI", 10, "bold"),
+            padding=[12, 6],
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", c["red"])],
+            foreground=[("selected", "#ffffff")],
+        )
+        style.configure(
+            "TLabelframe",
+            background=c["bg"],
+            bordercolor=c["border"],
+            relief="solid",
+        )
+        style.configure(
+            "TLabelframe.Label",
+            background=c["bg"],
+            foreground=c["text"],
+            font=("Segoe UI", 10, "bold"),
+        )
+        style.configure(
+            "TEntry",
+            fieldbackground=c["input"],
+            foreground=c["text"],
+            insertcolor=c["text"],
+            bordercolor=c["border"],
+            lightcolor=c["border"],
+            darkcolor=c["border"],
+        )
+        style.map(
+            "TEntry",
+            fieldbackground=[("focus", c["input"])],
+            bordercolor=[("focus", c["red"])],
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=c["input"],
+            background=c["panel_alt"],
+            foreground=c["text"],
+            arrowcolor=c["text_dim"],
+            bordercolor=c["border"],
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", c["input"])],
+            foreground=[("readonly", c["text"])],
+            selectbackground=[("readonly", c["input"])],
+            selectforeground=[("readonly", c["text"])],
+        )
+        style.configure(
+            "Treeview",
+            background=c["panel"],
+            fieldbackground=c["panel"],
+            foreground=c["text"],
+            bordercolor=c["border"],
+            rowheight=26,
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=c["navy"],
+            foreground="#ffffff",
+            font=("Segoe UI", 9, "bold"),
+            relief="flat",
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", c["red"])],
+            foreground=[("selected", "#ffffff")],
+        )
+        style.configure(
+            "TButton",
+            background=c["panel_alt"],
+            foreground=c["text"],
+            bordercolor=c["border"],
+            padding=[10, 5],
+            font=("Segoe UI", 9),
+        )
+        style.map(
+            "TButton",
+            background=[("active", c["border"])],
+            foreground=[("active", c["text"])],
+        )
+        style.configure(
+            "Horizontal.TProgressbar",
+            background=c["red"],
+            troughcolor=c["panel_alt"],
+            bordercolor=c["border"],
+            lightcolor=c["red"],
+            darkcolor=c["red"],
+        )
+
+    def _theme_walk(self, widget):
+        """Recursively re-color every non-ttk widget from the active theme."""
+        try:
+            if not isinstance(widget, ttk.Widget):
+                tag = getattr(widget, "_tag", None)
+                if tag == "header":
+                    widget.configure(bg=self.colors["navy"])
+                elif tag == "header_label":
+                    widget.configure(bg=self.colors["navy"])
+                elif tag == "run":
+                    widget.configure(
+                        bg=self.colors["red"],
+                        fg="#ffffff",
+                        activebackground="#d84410",
+                        activeforeground="#ffffff",
+                    )
+                elif tag == "sched":
+                    widget.configure(
+                        bg=self.colors["navy"],
+                        fg="#ffffff",
+                        activebackground="#1b2047",
+                        activeforeground="#ffffff",
+                    )
+                elif tag == "stop":
+                    widget.configure(
+                        bg="#6b7280",
+                        fg="#ffffff",
+                        activebackground="#565e6c",
+                        activeforeground="#ffffff",
+                    )
+                elif isinstance(widget, tk.Button):
+                    widget.configure(
+                        bg=self.colors["panel_alt"],
+                        fg=self.colors["text"],
+                        activebackground=self.colors["border"],
+                        activeforeground=self.colors["text"],
+                    )
+                elif isinstance(widget, tk.Label):
+                    widget.configure(
+                        bg=self.colors["bg"], fg=self.colors["text"]
+                    )
+                elif isinstance(widget, tk.Frame):
+                    widget.configure(bg=self.colors["bg"])
+                elif isinstance(widget, scrolledtext.ScrolledText):
+                    widget.configure(
+                        bg=self.colors["log_bg"],
+                        fg=self.colors["log_fg"],
+                        insertbackground=self.colors["log_fg"],
+                    )
+                elif isinstance(widget, tk.Text):
+                    widget.configure(
+                        bg=self.colors["log_bg"],
+                        fg=self.colors["log_fg"],
+                        insertbackground=self.colors["log_fg"],
+                    )
+                elif isinstance(widget, tk.Entry):
+                    widget.configure(
+                        bg=self.colors["input"],
+                        fg=self.colors["text"],
+                        insertbackground=self.colors["text"],
+                    )
+        except Exception:
+            pass
+        for child in widget.winfo_children():
+            self._theme_walk(child)
+
+    def _load_brand_assets(self):
+        """Load the real GFH logo + window icon (embedded), else render fallbacks."""
+        # Window / taskbar icon from the embedded .ico
+        ico_path = self._extract_embedded(EMBEDDED_ICON_B64, "gfh_bot.ico")
+        if ico_path:
+            try:
+                self.iconbitmap(ico_path)
+            except Exception:
+                pass
+        # Header logo: embedded real GFH logo first, rendered badge as fallback
+        logo_path = self._extract_embedded(EMBEDDED_LOGO_B64, "gfh_logo_real.png")
+        if not logo_path:
+            logo_path = self._build_logo_image()
+        if logo_path:
+            try:
+                self.images["logo"] = tk.PhotoImage(file=logo_path)
+            except Exception:
+                self.images["logo"] = None
+        for key in ("play", "clock", "stop", "save"):
+            self.images[key] = self._build_icon(key, "#ffffff")
+
+    def _extract_embedded(self, b64, filename):
+        """Decode an embedded base64 asset into APP_DATA_DIR; return path or None."""
+        try:
+            if not b64:
+                return None
+            import base64 as _b64
+            target = os.path.join(APP_DATA_DIR, filename)
+            with open(target, "wb") as fh:
+                fh.write(_b64.b64decode(b64))
+            return target if os.path.isfile(target) else None
+        except Exception:
+            return None
+
+    def _build_logo_image(self, size=46):
+        """Render a red 'GFH' badge logo and save it next to the config."""
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+
+            img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            draw.rounded_rectangle(
+                [2, 2, size - 2, size - 2],
+                radius=int(size * 0.28),
+                fill=BRAND_RED,
+            )
+            font = None
+            for font_path in (
+                r"C:\Windows\Fonts\segoeuib.ttf",
+                r"C:\Windows\Fonts\arialbd.ttf",
+                r"C:\Windows\Fonts\arial.ttf",
+            ):
+                try:
+                    font = ImageFont.truetype(font_path, int(size * 0.40))
+                    break
+                except Exception:
+                    continue
+            if font is None:
+                font = ImageFont.load_default()
+            text = "GFH"
+            bbox = draw.textbbox((0, 0), text, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            draw.text(
+                ((size - tw) / 2 - bbox[0], (size - th) / 2 - bbox[1]),
+                text,
+                font=font,
+                fill="#ffffff",
+            )
+            path = os.path.join(APP_DATA_DIR, "gfh_logo.png")
+            img.save(path)
+            return path
+        except Exception:
+            return None
+
+    def _build_icon(self, kind, color="#ffffff", size=18):
+        """Render a simple white icon for the action buttons."""
+        try:
+            from PIL import Image, ImageDraw
+
+            img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            d = ImageDraw.Draw(img)
+            s = float(size)
+            w1 = max(1, int(s * 0.08))
+            if kind == "play":
+                d.polygon(
+                    [
+                        (int(s * 0.32), int(s * 0.16)),
+                        (int(s * 0.32), int(s * 0.84)),
+                        (int(s * 0.86), int(s * 0.50)),
+                    ],
+                    fill=color,
+                )
+            elif kind == "clock":
+                r = s * 0.40
+                cx, cy = s / 2, s / 2
+                d.ellipse(
+                    [cx - r, cy - r, cx + r, cy + r],
+                    outline=color,
+                    width=w1,
+                )
+                d.line([cx, cy, cx, cy - r * 0.62], fill=color, width=w1)
+                d.line([cx, cy, cx + r * 0.52, cy], fill=color, width=w1)
+            elif kind == "stop":
+                pad = s * 0.24
+                d.rectangle([pad, pad, s - pad, s - pad], fill=color)
+            elif kind == "save":
+                d.rounded_rectangle(
+                    [s * 0.18, s * 0.22, s * 0.82, s * 0.88],
+                    radius=s * 0.08,
+                    outline=color,
+                    width=w1,
+                )
+                d.polygon(
+                    [
+                        (s * 0.18, s * 0.40), (s * 0.40, s * 0.40),
+                        (s * 0.40, s * 0.22), (s * 0.60, s * 0.22),
+                        (s * 0.60, s * 0.40), (s * 0.82, s * 0.40),
+                        (s * 0.82, s * 0.62), (s * 0.60, s * 0.62),
+                        (s * 0.60, s * 0.88), (s * 0.40, s * 0.88),
+                        (s * 0.40, s * 0.62), (s * 0.18, s * 0.62),
+                    ],
+                    fill=color,
+                )
+            path = os.path.join(APP_DATA_DIR, "icon_{0}.png".format(kind))
+            img.save(path)
+            return tk.PhotoImage(file=path)
+        except Exception:
+            return None
+
+    def _make_btn(self, parent, text, icon_key, bg, fg, command,
+                  width=15, tag=None, state=None):
+        """Create a flat branded button with an optional icon."""
+        kw = dict(
+            text=text,
+            bg=bg,
+            fg=fg,
+            activebackground=bg,
+            activeforeground=fg,
+            font=("Segoe UI", 10, "bold"),
+            relief=tk.FLAT,
+            bd=0,
+            padx=14,
+            pady=6,
+            cursor="hand2",
+            command=command,
+            width=width,
+        )
+        if state is not None:
+            kw["state"] = state
+        btn = tk.Button(parent, **kw)
+        icon = self.images.get(icon_key)
+        if icon is not None:
+            btn.configure(image=icon, compound=tk.LEFT)
+            btn._imgref = icon
+        if tag:
+            btn._tag = tag
+        return btn
+
+    # ------------------------------------------------------------------
+    # OCR dependency auto-setup (Tesseract / Ghostscript / pip packages)
+    # ------------------------------------------------------------------
+
+    def _auto_setup_deps(self):
+        """Check for missing OCR components; ask to install what's absent."""
+        missing_tools = []
+        if not _is_tesseract_installed():
+            missing_tools.append("Tesseract OCR")
+        if not _tool_on_path("gs"):
+            missing_tools.append("Ghostscript")
+        missing_pkgs = _missing_python_packages()
+
+        if not missing_tools and not missing_pkgs:
+            self.log_msg(
+                "OCR dependencies OK (Tesseract + Ghostscript found)."
+            )
+            return
+
+        self.after(
+            0,
+            lambda: self._confirm_setup_deps(missing_tools, missing_pkgs),
+        )
+
+    def _confirm_setup_deps(self, missing_tools, missing_pkgs):
+        title = "Install OCR Dependencies"
+        msg = (
+            "The bot needs a few extra components to read IMEIs "
+            "from WhatsApp images:\n\n"
+        )
+        if missing_tools:
+            msg += (
+                "System tools missing: "
+                + ", ".join(
+                    PIP_DEPENDENCIES.get(t, t) for t in missing_tools
+                )
+                + "\n"
+            )
+        if missing_pkgs:
+            msg += (
+                "Python packages missing: "
+                + ", ".join(
+                    PIP_DEPENDENCIES.get(p, p) for p in missing_pkgs
+                )
+                + "\n"
+            )
+        msg += (
+            "\nInstall automatically now? This downloads the installers "
+            "and may take a few minutes."
+        )
+        if messagebox.askyesno(title, msg):
+            threading.Thread(
+                target=self._install_deps_worker,
+                args=(missing_tools, missing_pkgs),
+                daemon=True,
+            ).start()
+        else:
+            self.log_msg(
+                "Skipped automatic install. OCR needs Tesseract to read IMEIs."
+            )
+
+    def _install_deps_worker(self, missing_tools, missing_pkgs):
+        try:
+            if missing_pkgs:
+                self.log_msg("Installing missing Python packages...")
+                pip_names = [
+                    PIP_DEPENDENCIES.get(pkg, pkg) for pkg in missing_pkgs
+                ]
+                pip_cmd = _pip_cmd()
+                if pip_cmd is None:
+                    self.log_msg(
+                        "Python not found for pip - install it from "
+                        "https://www.python.org/downloads/ first."
+                    )
+                    ok, output = False, "no python interpreter found"
+                else:
+                    ok, output = _run_cmd_quiet(
+                        pip_cmd + ["install", "--upgrade"] + pip_names,
+                        timeout=600,
+                    )
+                if ok:
+                    self.log_msg("Python packages installed.")
+                else:
+                    self.log_msg("pip install failed: " + output[-400:])
+
+            if "Tesseract OCR" in missing_tools:
+                self._install_tesseract()
+
+            if "Ghostscript" in missing_tools:
+                self._install_ghostscript()
+
+            self.log_msg("Dependency setup finished.")
+        except Exception as e:
+            self.log_msg("Dependency setup error: " + str(e))
+
+    def _install_tesseract(self):
+        self.log_msg("Installing Tesseract OCR...")
+        # Preferred: the Windows package manager
+        if _tool_on_path("winget"):
+            ok, _out = _run_cmd_quiet(
+                [
+                    "winget", "install", "--id",
+                    "UB-Mannheim.TesseractOCR", "-e",
+                    "--accept-source-agreements",
+                    "--accept-package-agreements", "--silent",
+                ],
+                timeout=600,
+            )
+            self._refresh_tesseract_path()
+            if _is_tesseract_installed():
+                self.log_msg("Tesseract installed via winget.")
+                return
+        # Fallback: official silent installer
+        installer = os.path.join(APP_DATA_DIR, "tesseract-setup.exe")
+        if _download_file(TESSERACT_URL, installer, self.log_msg):
+            _run_cmd_quiet([installer, "/S"], timeout=900)
+            self._refresh_tesseract_path()
+            if _is_tesseract_installed():
+                self.log_msg("Tesseract installed from official installer.")
+                return
+        self.log_msg(
+            "Tesseract install failed - install it manually from "
+            "https://digi.bib.uni-mannheim.de/tesseract/ and restart the bot."
+        )
+
+    def _install_ghostscript(self):
+        self.log_msg("Installing Ghostscript (optional image support)...")
+        if _tool_on_path("winget"):
+            ok, _out = _run_cmd_quiet(
+                [
+                    "winget", "install", "--id",
+                    "ArtifexSoftware.Ghostscript", "-e",
+                    "--accept-source-agreements",
+                    "--accept-package-agreements", "--silent",
+                ],
+                timeout=600,
+            )
+            if ok and _tool_on_path("gs"):
+                self.log_msg("Ghostscript installed via winget.")
+                return
+        self.log_msg(
+            "Ghostscript not installed (optional - only needed for some "
+            "image formats; PNG screenshots work without it)."
+        )
+
+    def _refresh_tesseract_path(self):
+        path = _locate_tesseract()
+        pytesseract.pytesseract.tesseract_cmd = path
+        if os.path.isfile(path):
+            self.log_msg("Tesseract located at: " + path)
+
+    def ui_state_running(self):
+        self.btn_run.config(state=tk.DISABLED)
+        self.btn_stop.config(state=tk.NORMAL)
+        self.progress.start(10)
+
+    def ui_state_stopped(self):
+        self.btn_run.config(state=tk.NORMAL)
+        self.btn_stop.config(state=tk.DISABLED)
+        self.progress.stop()
+
+    # --- Scheduler ---
+
+    def toggle_scheduler(self):
+        if self.scheduler_running:
+            self.scheduler_running = False
+            # FIX #4: Clear stale jobs when stopping
+            schedule.clear()
+            self.btn_sched.config(
+                text="\u23f0 Start Scheduler", bg=BRAND_NAVY
+            )
+            self.log_msg("Scheduler stopped and jobs cleared.")
+        else:
+            schedule.clear()
+            times = [
+                t.strip()
+                for t in self.schedule_times.split(",")
+                if t.strip()
+            ]
+            for t in times:
+                try:
+                    schedule.every().day.at(t).do(self.run_manual)
+                    self.log_msg(f"Scheduled transfer job at {t}.")
+                except Exception as e:
+                    self.log_msg(f"Invalid time format '{t}': {e}")
+
+            if schedule.get_jobs():
+                self.scheduler_running = True
+                self.btn_sched.config(
+                    text="\u23f0 Stop Scheduler", bg=BRAND_RED
+                )
+                self.scheduler_thread = threading.Thread(
+                    target=self._scheduler_loop, daemon=True
+                )
+                self.scheduler_thread.start()
+            else:
+                self.log_msg("No valid schedule times provided.")
+
+    def _scheduler_loop(self):
+        while self.scheduler_running:
+            schedule.run_pending()
+            time.sleep(1)
+
+    # --- Bot Execution ---
+
+    def run_manual(self):
+        if not self.mappings:
+            messagebox.showwarning(
+                "Missing Config",
+                "Please add Store Name to Account ID mappings first.",
+            )
+            return
+
+        wa_groups_str = (
+            self.txt_wa_groups.get("1.0", tk.END).strip()
+        )
+        if not wa_groups_str:
+            messagebox.showwarning(
+                "Missing Config",
+                "Please set the WhatsApp Group(s) to monitor.",
+            )
+            return
+
+        acc = self.entry_acc.get().strip()
+        usr = self.entry_usr.get().strip()
+        pwd = self.entry_pwd.get().strip()
+
+        if not all([acc, usr, pwd]):
+            messagebox.showwarning(
+                "Missing Config",
+                "Please enter CRM Account, Username, and Password in settings.",
+            )
+            return
+
+        self.stop_event.clear()
+        self.ui_state_running()
+        threading.Thread(
+            target=self._bot_workflow,
+            args=(acc, usr, pwd, wa_groups_str),
+            daemon=True,
+        ).start()
+
+    def stop_bot(self):
+        self.log_msg("Sending stop signal... Please wait.")
+        self.stop_event.set()
+
+    def _bot_workflow(self, crm_acc, crm_usr, crm_pwd, wa_groups_str):
+        self.log_msg("=== Starting Transfer Bot Workflow ===")
+        wa_scraper = None
+        crm_system = None
+
+        # Close any browser session left open by a previous run so the
+        # shared profile is free for the new session.
+        if self.retained_driver is not None:
+            try:
+                self.log_msg("Closing previous browser session...")
+                self.retained_driver.quit()
+            except Exception:
+                pass
+            finally:
+                self.retained_driver = None
+
+        try:
+            # 1. VidaPay CRM opens FIRST (browser ordering)
+            crm_system = VidapayTransferSystem(
+                crm_acc, crm_usr, crm_pwd,
+                self.log_msg, self.stop_event,
+            )
+
+            if not crm_system.start_browser_and_login():
+                self.log_msg("Failed to log in to CRM. Aborting run.")
+                return
+
+            # 2. Extractor: WhatsApp Web opens in a SECOND TAB of the same
+            # browser session, alongside the still-open VidaPay tab
+            wa_scraper = WhatsAppScraper(
+                wa_groups_str, self.log_msg, self.stop_event
+            )
+            if not wa_scraper.start_whatsapp(
+                shared_driver=crm_system.driver
+            ):
+                self.log_msg(
+                    "Failed to open WhatsApp Web in the shared browser. "
+                    "Aborting run."
+                )
+                return
+
+            tasks = wa_scraper.find_and_read_groups(self.mappings)
+            self.log_msg(
+                f"Extraction complete: {len(tasks)} transfer request(s) found."
+            )
+
+            if not tasks:
+                self.log_msg(
+                    "No pending transfer requests found across any monitored group."
+                )
+                return
+
+            # 3. Switch back to the VidaPay tab and run the transfers
+            self.log_msg(
+                "Switching back to the VidaPay tab to run the transfers..."
+            )
+            if not crm_system.navigate_to_transfer_tool():
+                self.log_msg("Could not open Reassignment Tool. Aborting.")
+                return
+
+            for task in tasks:
+                if self.stop_event.is_set():
+                    break
+                success = crm_system.execute_transfer(
+                    task["account_id"], task["imeis"]
+                )
+                status = "SUCCESS" if success else "FAILED"
+                self.append_history(
+                    task["store"],
+                    task["account_id"],
+                    len(task["imeis"]),
+                    status,
+                )
+
+            self.log_msg("=== Workflow Complete ===")
+
+        except Exception as e:
+            self.log_msg(f"Critical workflow error: {e}")
+        finally:
+            # Keep the browser open for manual inspection; it is closed
+            # automatically at the start of the next run.
+            if crm_system is not None and crm_system.driver is not None:
+                self.retained_driver = crm_system.driver
+            # FIX #3: Always clean up a WhatsApp-only browser if one existed
+            if wa_scraper is not None:
+                wa_scraper.close()
+            self.log_msg(
+                "Browser kept open (VidaPay + WhatsApp tabs) for manual "
+                "inspection."
+            )
+            self.ui_state_stopped()
+
+
+if __name__ == "__main__":
+    app = VidaPayTransferApp()
+    app.mainloop()
