@@ -16,10 +16,10 @@ jobs:
     runs-on: windows-latest
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
     
@@ -34,7 +34,7 @@ jobs:
         pyinstaller VidaPay_Transfer_Bot.spec
     
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: Vidapay Transfer Bot-windows-exe
         path: dist/
@@ -46,4 +46,4 @@ jobs:
       with:
         files: dist/*.exe
       env:
-        GITHUB_TOKEN: ${ secrets.GITHUB_TOKEN }
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
