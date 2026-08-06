@@ -8,6 +8,7 @@ import json
 import queue
 import base64
 import shutil
+import socket
 import subprocess
 import sys
 import urllib.request
@@ -35,6 +36,9 @@ from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import (
     TimeoutException,
     StaleElementReferenceException,
+    WebDriverException,
+    NoSuchWindowException,
+    InvalidSessionIdException,
 )
 
 # ============================================================================
@@ -125,13 +129,15 @@ def _locate_tesseract():
 
 pytesseract.pytesseract.tesseract_cmd = _locate_tesseract()
 
-# Use the user's real Edge profile, exactly like the VidaPay Ordering and
-# Incentive Extractor tools, so extensions installed in the normal profile
-# (e.g. the USA PLANET VPN add-on the user clicks to connect) appear in the
-# browser toolbar when the bot opens it.
-EDGE_USER_DATA_DIR = os.path.join(
-    os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Edge", "User Data"
-)
+# Dedicated Edge automation profile + remote debugging, exactly like the
+# VidaPay Ordering and Incentive Extractor tools: a REAL Edge window opens
+# (installed extensions such as the USA PLANET VPN add-on show in the
+# toolbar), you connect your VPN inside it, and Selenium attaches to the
+# already-open browser through the remote debugging port.
+AUTOMATION_PROFILE_DIR = r"C:\VidaPay_Edge_Automation_Profile"
+REMOTE_DEBUGGING_PORT = 9222
+ATTACH_TO_OPEN_EDGE = True
+PAGE_LOAD_TIMEOUT = 90
 
 CRM_MAIN_PANEL_URL = "https://www.vidapaycrm.com/Main%20Panel.aspx"
 CRM_LOGIN_URL = "https://www.vidapaycrm.com/Login.aspx"
@@ -353,11 +359,328 @@ def _wait_for_human_verification_clear(driver, log, timeout=300):
     return False
 
 
+# ----------------------------------------------------------------------------
+# EDGE / VPN BROWSER HELPERS (ported from the VidaPay Ordering and Incentive
+# Extractor bots)
+#
+# Instead of launching the browser with Selenium directly, these helpers open
+# a REAL Microsoft Edge window (via subprocess + remote debugging on port
+# 9222, using a dedicated automation profile). That way the user's installed
+# extensions - including the USA PLANET VPN add-on - show in the toolbar, and
+# the user can connect their VPN inside the plain browser window. Selenium
+# then ATTACHES to the already-open browser through the remote debugging port,
+# so the VPN connection and the visible extensions are kept.
+# ----------------------------------------------------------------------------
+
+def get_edge_exe_path():
+    possible_paths = [
+        shutil.which("msedge"),
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ]
+
+    for path in possible_paths:
+        if path and os.path.exists(path):
+            return path
+
+    return None
+
+
+def is_port_open(host="127.0.0.1", port=REMOTE_DEBUGGING_PORT, timeout=1):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def _edge_base_args(url):
+    return [
+        get_edge_exe_path(),
+        f"--remote-debugging-port={REMOTE_DEBUGGING_PORT}",
+        f"--user-data-dir={AUTOMATION_PROFILE_DIR}",
+        "--profile-directory=Default",
+        "--no-first-run",
+        "--no-default-browser-check",
+        url,
+    ]
+
+
+def open_edge_url_in_real_tab(url="about:blank", log=print):
+    """Force Edge to open a normal browser tab in the automation profile."""
+    edge_path = get_edge_exe_path()
+
+    if not edge_path:
+        log("Microsoft Edge executable not found.")
+        return False
+
+    os.makedirs(AUTOMATION_PROFILE_DIR, exist_ok=True)
+
+    try:
+        subprocess.Popen(_edge_base_args(url))
+        log(f"Opened Edge normal tab for URL: {url}")
+        return True
+    except Exception as e:
+        log(f"Failed to open Edge normal tab: {e}")
+        return False
+
+
+def get_driver_handles(driver):
+    try:
+        return list(driver.window_handles)
+    except (NoSuchWindowException, InvalidSessionIdException, WebDriverException):
+        return []
+    except Exception:
+        return []
+
+
+def is_browser_chrome_url(url):
+    lower_url = (url or "").lower().strip()
+
+    browser_chrome_prefixes = (
+        "edge://",
+        "chrome://",
+        "devtools://",
+        "edge-extension://",
+        "chrome-extension://",
+    )
+
+    return lower_url.startswith(browser_chrome_prefixes)
+
+
+def switch_to_first_live_content_tab(driver, log=print):
+    handles = get_driver_handles(driver)
+
+    if not handles:
+        return False
+
+    fallback_handle = None
+
+    for handle in handles:
+        try:
+            driver.switch_to.window(handle)
+            try:
+                current_url = driver.current_url or ""
+            except Exception:
+                current_url = ""
+
+            if not fallback_handle:
+                fallback_handle = handle
+
+            if current_url and not is_browser_chrome_url(current_url):
+                return True
+
+            if current_url in ("about:blank", "data:,", ""):
+                return True
+
+        except Exception:
+            continue
+
+    if fallback_handle:
+        try:
+            driver.switch_to.window(fallback_handle)
+            return True
+        except Exception:
+            return False
+
+    return False
+
+
+def open_blank_normal_tab(driver, log=print):
+    """Open a plain web-content tab and switch Selenium to it."""
+    before_handles = set(get_driver_handles(driver))
+
+    if not switch_to_first_live_content_tab(driver, log=log):
+        open_edge_url_in_real_tab("about:blank", log=log)
+        time.sleep(1.5)
+
+    try:
+        driver.switch_to.new_window("tab")
+        time.sleep(0.5)
+        log("Created fresh Edge tab for automation.")
+        return True
+    except Exception:
+        pass
+
+    try:
+        driver.execute_cdp_cmd("Target.createTarget", {"url": "about:blank"})
+        time.sleep(1)
+
+        after_handles = get_driver_handles(driver)
+        new_handles = [handle for handle in after_handles if handle not in before_handles]
+
+        for handle in reversed(new_handles or after_handles):
+            try:
+                driver.switch_to.window(handle)
+                log("Created fresh Edge tab through DevTools.")
+                return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    open_edge_url_in_real_tab("about:blank", log=log)
+    time.sleep(1.5)
+
+    return switch_to_first_live_content_tab(driver, log=log)
+
+
+def prepare_edge_automation_tab(driver, log=print):
+    if open_blank_normal_tab(driver, log=log):
+        try:
+            driver.get("about:blank")
+        except Exception:
+            pass
+        return True
+
+    log("Could not prepare a normal Edge tab for automation.")
+    return False
+
+
+def wait_for_body(driver, timeout=PAGE_LOAD_TIMEOUT):
+    WebDriverWait(driver, timeout).until(
+        EC.presence_of_element_located((By.TAG_NAME, "body"))
+    )
+
+
+def open_url_in_edge_tab(driver, url, timeout=PAGE_LOAD_TIMEOUT, log=print):
+    """Navigate a real Edge web tab to a URL, recovering from closed/UI targets."""
+    if not switch_to_first_live_content_tab(driver, log=log):
+        if not prepare_edge_automation_tab(driver, log=log):
+            return False
+
+    try:
+        current_url = driver.current_url or ""
+    except Exception:
+        current_url = ""
+
+    if is_browser_chrome_url(current_url) or not current_url:
+        if not prepare_edge_automation_tab(driver, log=log):
+            return False
+
+    log(f"Opening URL in Edge address bar: {url}")
+
+    try:
+        driver.get(url)
+        wait_for_body(driver, timeout=timeout)
+        return True
+    except (NoSuchWindowException, InvalidSessionIdException, WebDriverException) as first_error:
+        log(f"Direct navigation hit a closed/non-page target. Recovering: {first_error}")
+
+        try:
+            prepare_edge_automation_tab(driver, log=log)
+            driver.get(url)
+            wait_for_body(driver, timeout=timeout)
+            return True
+        except Exception as second_error:
+            log(f"Recovered navigation failed: {second_error}")
+            return False
+    except Exception as e:
+        log(f"Navigation failed: {e}")
+        return False
+
+
+def open_vpn_setup_browser(url=None, log=print):
+    """Launch the dedicated Edge automation browser for VPN setup if not running."""
+    if url is None:
+        url = CRM_MAIN_PANEL_URL
+
+    os.makedirs(AUTOMATION_PROFILE_DIR, exist_ok=True)
+
+    if is_port_open():
+        log("Automation Edge is already open and ready.")
+        log("Use that Edge window. Confirm VPN is connected there.")
+        return True
+
+    edge_path = get_edge_exe_path()
+
+    if not edge_path:
+        log("Microsoft Edge executable not found.")
+        return False
+
+    try:
+        subprocess.Popen(_edge_base_args(url))
+        log("Opened dedicated Edge automation browser.")
+        log("Connect VPN inside this Edge window.")
+        log("Keep this Edge window open while running the bot.")
+
+        for _ in range(20):
+            if is_port_open():
+                log("Automation Edge remote connection is ready.")
+                return True
+
+            time.sleep(0.5)
+
+        log("Edge opened, but remote debugging port is not ready yet.")
+        log("Wait a few seconds, then try again.")
+        return False
+
+    except Exception as e:
+        log(f"Failed to open VPN setup browser: {e}")
+        return False
+
+
+def create_edge_driver(log=print, attach=None):
+    """Start (or attach to) the automation Edge browser and return a Selenium driver.
+
+    attach=True  → attach to the dedicated VPN-setup Edge window (remote debugging).
+    attach=False → launch the automation browser directly, standalone.
+    attach=None  → use the ATTACH_TO_OPEN_EDGE build constant.
+    """
+    if ATTACH_TO_OPEN_EDGE if attach is None else attach:
+        if not is_port_open():
+            log("Automation Edge is not open.")
+            log("Opening VPN Browser Setup now.")
+            open_vpn_setup_browser(log=log)
+
+        if not is_port_open():
+            raise WebDriverException(
+                "Automation Edge is not available on remote debugging port. "
+                "Open VPN Browser Setup first and keep that Edge window open."
+            )
+
+        options = Options()
+        options.add_experimental_option(
+            "debuggerAddress",
+            f"127.0.0.1:{REMOTE_DEBUGGING_PORT}"
+        )
+
+        driver = EdgeDriver(options=options)
+        driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+
+        if not prepare_edge_automation_tab(driver, log=log):
+            raise WebDriverException(
+                "Edge is open, but Selenium could not attach to a normal browser tab. "
+                "Close the Edge Downloads popup/flyout and try again."
+            )
+
+        _inject_anti_detection(driver)
+        return driver
+
+    # Standalone (non-attach) launch of the automation profile.
+    options = Options()
+    options.add_argument("--start-maximized")
+    options.add_argument("--disable-notifications")
+    options.add_argument("--disable-popup-blocking")
+    options.add_argument("--no-first-run")
+    options.add_argument("--no-default-browser-check")
+    options.add_argument(f"--user-data-dir={AUTOMATION_PROFILE_DIR}")
+    options.add_argument("--profile-directory=Default")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
+    options.add_argument("--disable-blink-features=AutomationControlled")
+
+    driver = EdgeDriver(options=options)
+    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+    _inject_anti_detection(driver)
+    return driver
+
+
 class VidapayTransferSystem:
     """Standalone CRM logic for Inventory Reassignment with proper login flow."""
 
     def __init__(self, account_id, username, password, log_callback,
-                 stop_event, vpn_pause_cb=None, retry_cb=None):
+                 stop_event, vpn_pause_cb=None):
         self.account_id = account_id
         self.username = username
         self.password = password
@@ -367,10 +690,6 @@ class VidapayTransferSystem:
         # login, so the user can connect their VPN first (matches the
         # VidaPay Ordering / Incentive Extractors behavior).
         self.vpn_pause_cb = vpn_pause_cb
-        # Called when the browser cannot start because the user's normal
-        # Edge profile is locked by a running Edge window. Returns True to
-        # retry after the user closes Edge, False to abort.
-        self.retry_cb = retry_cb
         self.driver = None
         self.wait = None
 
@@ -380,53 +699,21 @@ class VidapayTransferSystem:
     def start_browser_and_login(self):
         self.log("Starting Edge Browser for CRM...")
         try:
-            # FIX #8: Anti-detection and proper options
-            options = Options()
-            options.add_argument("--start-maximized")
-            options.add_argument("--disable-notifications")
-            options.add_argument("--no-first-run")
-            options.add_argument("--no-default-browser-check")
-            options.add_argument("--disable-blink-features=AutomationControlled")
-            options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            options.add_experimental_option("useAutomationExtension", False)
-            options.add_experimental_option("detach", True)
-            # Same normal Edge profile as the Ordering/Extractor tools: the
-            # user's installed extensions (VPN, etc.) show in the toolbar,
-            # and WhatsApp Web login state persists in the same profile.
-            options.add_argument(f"--user-data-dir={EDGE_USER_DATA_DIR}")
-            options.add_argument("--profile-directory=Default")
-
-            # Open the browser with the user's real profile. If Edge is
-            # already running with it, the profile is locked and the driver
-            # fails to start -- ask the user to close Edge and retry.
-            created = False
-            for attempt in range(1, 4):
-                try:
-                    self.driver = EdgeDriver(options=options)
-                    created = True
-                    break
-                except Exception as e:
-                    self.log(f"Edge could not open (attempt {attempt}/3): {e}")
-                    if attempt == 3 or self.retry_cb is None:
-                        break
-                    if not self.retry_cb():
-                        break
-            if not created:
-                self.log(
-                    "Could not open the Edge browser. Close all Edge windows "
-                    "and try again."
-                )
+            # Same browser mechanism as the VidaPay Ordering and Incentive
+            # Extractor tools: open a REAL Edge window (subprocess + remote
+            # debugging on port 9222, dedicated automation profile) so the
+            # user's installed extensions - including the USA PLANET VPN
+            # add-on - show in the toolbar. The user connects the VPN inside
+            # that plain browser window, then Selenium attaches to it.
+            if not open_vpn_setup_browser(log=self.log):
+                self.log("Could not open the Edge automation browser.")
                 return False
-            _inject_anti_detection(self.driver)
-            self.wait = WebDriverWait(self.driver, 30)
-            # Record the VidaPay tab; WhatsApp Web opens next to it in a
-            # second tab of this same browser window.
-            self.main_window = self.driver.current_window_handle
 
-            # Pause here so the user can connect their VPN before the bot
-            # navigates to the CRM site (same as the VidaPay Ordering and
-            # Incentive Extractor tools). Skipping this caused page-load
-            # failures like "CRM Login failed: Message:" with no text.
+            # Pause here so the user can connect their VPN inside the open
+            # Edge window before the bot navigates to the CRM site (same as
+            # the VidaPay Ordering and Incentive Extractor tools). Skipping
+            # this caused page-load failures like "CRM Login failed: Message:"
+            # with no text.
             if self.vpn_pause_cb is not None:
                 self.log(
                     "Browser opened - connect your VPN, then confirm to continue..."
@@ -434,6 +721,14 @@ class VidapayTransferSystem:
                 if not self.vpn_pause_cb():
                     self.log("VPN connect cancelled. Aborting run.")
                     return False
+
+            # Attach Selenium to the already-open Edge window through the
+            # remote debugging port (extensions and the VPN stay visible).
+            self.driver = create_edge_driver(log=self.log)
+            self.wait = WebDriverWait(self.driver, 30)
+            # Record the VidaPay tab; WhatsApp Web opens next to it in a
+            # second tab of this same browser window.
+            self.main_window = self.driver.current_window_handle
 
             self.log("Navigating to VidaPay Login...")
             # Retry the load: right after a VPN connects, the tunnel can
@@ -916,25 +1211,22 @@ class WhatsAppScraper:
             self.driver.get("https://web.whatsapp.com")
             return self._wait_for_whatsapp_session()
 
-        # Standalone mode: launch a dedicated browser for WhatsApp.
+        # Standalone mode: open (or attach to) the same dedicated Edge
+        # automation browser used for VidaPay, so the WhatsApp Web login
+        # state lives in the same profile and the VPN/extensions stay
+        # visible in the toolbar.
         self.owns_driver = True
-        options = Options()
-        options.add_argument(f"--user-data-dir={EDGE_USER_DATA_DIR}")
-        options.add_argument("--profile-directory=Default")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option("useAutomationExtension", False)
-        options.add_experimental_option("detach", True)
-
         try:
-            self.driver = EdgeDriver(options=options)
-            _inject_anti_detection(self.driver)
+            # If the automation Edge isn't open yet, this opens a real Edge
+            # window (profile with the user's extensions) and the attach step
+            # below connects Selenium right through the debugging port.
+            open_vpn_setup_browser(url="about:blank", log=self.log)
+            self.driver = create_edge_driver(log=self.log)
             self.wait = WebDriverWait(self.driver, 30)
+            open_url_in_edge_tab(
+                self.driver, "https://web.whatsapp.com", log=self.log
+            )
             self.wa_window = self.driver.current_window_handle
-            self.driver.get("https://web.whatsapp.com")
             return self._wait_for_whatsapp_session()
         except Exception as e:
             self.log(f"WhatsApp initialization failed: {e}")
@@ -1136,13 +1428,16 @@ class WhatsAppScraper:
     def close(self):
         # Only quit the browser if this scraper launched it. When reusing the
         # VidaPay browser session, quitting here would kill the shared window.
-        if self.driver and self.owns_driver:
-            try:
-                self.driver.quit()
-            except Exception:
-                pass
-            finally:
-                self.driver = None
+        # In ATTACH_TO_OPEN_EDGE mode the dedicated Edge window (profile,
+        # extensions, VPN) stays open between runs, so we just detach and
+        # never force-quit it.
+        if self.driver:
+            if self.owns_driver and not ATTACH_TO_OPEN_EDGE:
+                try:
+                    self.driver.quit()
+                except Exception:
+                    pass
+            self.driver = None
 
 
 # ============================================================================
@@ -1633,29 +1928,6 @@ class VidaPayTransferApp(tk.Tk):
         self.after(0, ask)
         ready.wait()
         return proceed["ok"]
-
-    def _prompt_close_edge_and_retry(self):
-        """Ask the user to close any open Edge windows so the bot can open
-        the shared normal profile (the driver starts with a fresh instance).
-
-        Returns True to retry opening the browser, False to abort.
-        """
-        ready = threading.Event()
-        retry = {"ok": False}
-
-        def ask():
-            retry["ok"] = messagebox.askretrycancel(
-                "Close Edge to continue",
-                "The bot opens your normal Edge profile so your VPN "
-                "extension is available, but that profile is locked by an "
-                "open Edge window.\n\n"
-                "Close all Edge windows, then click Retry.",
-            )
-            ready.set()
-
-        self.after(0, ask)
-        ready.wait()
-        return retry["ok"]
 
     # ------------------------------------------------------------------
     # GFH Branding: logo, icons, themes
@@ -2271,16 +2543,24 @@ class VidaPayTransferApp(tk.Tk):
         wa_scraper = None
         crm_system = None
 
-        # Close any browser session left open by a previous run so the
-        # shared profile is free for the new session.
+        # With ATTACH_TO_OPEN_EDGE the dedicated Edge window stays open
+        # between runs (extensions/VPN/profile persist) and this run simply
+        # re-attaches to it through the remote debugging port, so there is
+        # no prior driver session to force-quit.
         if self.retained_driver is not None:
-            try:
-                self.log_msg("Closing previous browser session...")
-                self.retained_driver.quit()
-            except Exception:
-                pass
-            finally:
+            if ATTACH_TO_OPEN_EDGE:
+                # The dedicated Edge window (profile, extensions, VPN)
+                # stays open; this run re-attaches via remote debugging.
+                self.log_msg("Reusing the open automation Edge window...")
                 self.retained_driver = None
+            else:
+                try:
+                    self.log_msg("Closing previous browser session...")
+                    self.retained_driver.quit()
+                except Exception:
+                    pass
+                finally:
+                    self.retained_driver = None
 
         try:
             # 1. VidaPay CRM opens FIRST (browser ordering)
@@ -2288,7 +2568,6 @@ class VidaPayTransferApp(tk.Tk):
                 crm_acc, crm_usr, crm_pwd,
                 self.log_msg, self.stop_event,
                 vpn_pause_cb=self._prompt_vpn_connect,
-                retry_cb=self._prompt_close_edge_and_retry,
             )
 
             if not crm_system.start_browser_and_login():
