@@ -3,10 +3,6 @@ name: Build Windows .exe
 on:
   push:
     branches: [ main, master, develop ]
-    paths:
-      - '**.py'
-      - 'requirements.txt'
-      - '.github/workflows/build.yml'
   pull_request:
     branches: [ main, master, develop ]
   workflow_dispatch:

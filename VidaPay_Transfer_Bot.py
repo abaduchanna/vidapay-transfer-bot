@@ -1194,21 +1194,25 @@ class WhatsAppScraper:
         self.log("Starting WhatsApp Web...")
 
         # Same-browser mode: reuse the browser session already opened for
-        # VidaPay instead of launching a second, separate browser.
+        # VidaPay instead of launching a second, separate browser. WhatsApp
+        # opens in its OWN real tab (created via the robust Selenium-native
+        # new_window helper with CDP fallback) so it never loads in the same
+        # tab as VidaPay; the VidaPay tab stays open behind it.
         if shared_driver is not None:
             self.driver = shared_driver
             self.owns_driver = False
             self.wait = WebDriverWait(self.driver, 30)
-            # Open WhatsApp Web in a SECOND TAB of the same browser window so
-            # the VidaPay tab stays open and both sites run at the same time.
             self.log(
-                "Opening WhatsApp Web in a new tab of the same browser "
+                "Opening WhatsApp Web in a separate tab "
                 "(the VidaPay tab stays open)..."
             )
-            self.driver.execute_script("window.open('about:blank');")
-            self.driver.switch_to.window(self.driver.window_handles[-1])
+            if not open_blank_normal_tab(self.driver, log=self.log):
+                self.log("Could not create a separate WhatsApp tab.")
+                return False
             self.wa_window = self.driver.current_window_handle
-            self.driver.get("https://web.whatsapp.com")
+            open_url_in_edge_tab(
+                self.driver, "https://web.whatsapp.com", log=self.log
+            )
             return self._wait_for_whatsapp_session()
 
         # Standalone mode: open (or attach to) the same dedicated Edge
@@ -1535,17 +1539,15 @@ class VidaPayTransferApp(tk.Tk):
         )
         theme_lbl.pack(side=tk.LEFT, padx=(0, 8))
         theme_lbl._tag = "header_label"
-        self.theme_combo = ttk.Combobox(
+        # One-click toggle between light and dark, instead of a dropdown.
+        self.theme_btn = ttk.Button(
             theme_box,
-            values=["System", "Light", "Dark"],
-            state="readonly",
-            width=9,
-            font=("Segoe UI", 9),
+            text="",
+            width=12,
+            command=self._toggle_theme,
         )
-        order = {"system": 0, "light": 1, "dark": 2}
-        self.theme_combo.current(order.get(self.theme_setting, 0))
-        self.theme_combo.bind("<<ComboboxSelected>>", self._on_theme_change)
-        self.theme_combo.pack(side=tk.LEFT)
+        self.theme_btn.pack(side=tk.LEFT)
+        self._update_theme_btn()
 
         # ---- Body ----
         self.notebook = ttk.Notebook(self)
@@ -1953,19 +1955,46 @@ class VidaPayTransferApp(tk.Tk):
         except Exception:
             return "light"
 
-    def _on_theme_change(self, _event=None):
-        choice = self.theme_combo.get().lower()
-        if choice in ("system", "light", "dark"):
-            self.theme_setting = choice
-            self.config_data["theme"] = choice
-            save_config(self.config_data)
-            self._apply_theme()
+    def _toggle_theme(self):
+        """One-click toggle between light and dark (no dropdown)."""
+        current = self._resolve_theme()
+        self.theme_setting = "dark" if current == "light" else "light"
+        self.config_data["theme"] = self.theme_setting
+        save_config(self.config_data)
+        self._apply_theme()
+        self._update_theme_btn()
+
+    def _update_theme_btn(self):
+        """Show which theme the button will switch to and style it."""
+        current = self._resolve_theme()
+        next_theme = "dark" if current == "light" else "light"
+        try:
+            self.theme_btn.config(
+                text="Switch to Dark" if next_theme == "dark" else "Switch to Light",
+            )
+            # Ink the button to match the current theme navbar accent.
+            btn_style = ttk.Style()
+            btn_style.configure(
+                "ThemeToggle.TButton",
+                background=self.colors["navy"],
+                foreground="#ffffff",
+                bordercolor=self.colors["navy"],
+                focusthickness=0,
+            )
+            btn_style.map(
+                "ThemeToggle.TButton",
+                background=[("active", self.colors["red"])],
+            )
+            self.theme_btn.configure(style="ThemeToggle.TButton")
+        except Exception:
+            pass
 
     def _apply_theme(self):
         self.colors = THEMES[self._resolve_theme()]
         self.configure(bg=self.colors["bg"])
         self._style_ttk()
         self._theme_walk(self)
+        self._update_theme_btn()
 
     def _style_ttk(self):
         c = self.colors
