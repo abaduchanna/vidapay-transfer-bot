@@ -1692,7 +1692,7 @@ class VidaPayTransferApp(tk.Tk):
             fg="#ffffff",
             command=self.save_settings,
             width=None,
-            tag="sched",
+            tag="save",
         )
         self.btn_save.grid(row=3, column=0, columnspan=2, pady=6)
 
@@ -2114,6 +2114,26 @@ class VidaPayTransferApp(tk.Tk):
                         activeforeground="#ffffff",
                     )
                 elif tag == "sched":
+                    # Scheduler button: navy when idle, red when running (Stop Scheduler)
+                    try:
+                        txt = str(widget.cget("text")).lower()
+                    except Exception:
+                        txt = ""
+                    if "stop" in txt:
+                        widget.configure(
+                            bg=self.colors["red"],
+                            fg="#ffffff",
+                            activebackground="#d84410",
+                            activeforeground="#ffffff",
+                        )
+                    else:
+                        widget.configure(
+                            bg=self.colors["navy"],
+                            fg="#ffffff",
+                            activebackground="#1b2047",
+                            activeforeground="#ffffff",
+                        )
+                elif tag == "save":
                     widget.configure(
                         bg=self.colors["navy"],
                         fg="#ffffff",
@@ -2490,7 +2510,8 @@ class VidaPayTransferApp(tk.Tk):
             # FIX #4: Clear stale jobs when stopping
             schedule.clear()
             self.btn_sched.config(
-                text="\u23f0 Start Scheduler", bg=BRAND_NAVY
+                text="\u23f0 Start Scheduler", bg=self.colors["navy"],
+                activebackground="#1b2047"
             )
             self.log_msg("Scheduler stopped and jobs cleared.")
         else:
@@ -2510,7 +2531,8 @@ class VidaPayTransferApp(tk.Tk):
             if schedule.get_jobs():
                 self.scheduler_running = True
                 self.btn_sched.config(
-                    text="\u23f0 Stop Scheduler", bg=BRAND_RED
+                    text="\u23f0 Stop Scheduler", bg=self.colors["red"],
+                    activebackground="#d84410"
                 )
                 self.scheduler_thread = threading.Thread(
                     target=self._scheduler_loop, daemon=True
