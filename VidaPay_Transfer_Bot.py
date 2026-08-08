@@ -2313,8 +2313,12 @@ class VidaPayTransferApp(tk.Tk):
             return None
 
     def _make_btn(self, parent, text, icon_key, bg, fg, command,
-                  width=15, tag=None, state=None):
-        """Create a flat branded button with an optional icon."""
+                  width=None, tag=None, state=None):
+        """Create a flat branded button with an optional icon.
+
+        width=None lets the button auto-size to fit its text + icon.
+        Pass an explicit width only when you need a fixed-width button.
+        """
         kw = dict(
             text=text,
             bg=bg,
