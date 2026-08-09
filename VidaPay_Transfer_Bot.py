@@ -1481,6 +1481,11 @@ class VidaPayTransferApp(tk.Tk):
         self.colors = THEMES[self._resolve_theme()]
 
         self.images = {}
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("VidaPay.TransferBot")
+        except Exception:
+            pass
         self._load_brand_assets()
 
         self._build_ui()
