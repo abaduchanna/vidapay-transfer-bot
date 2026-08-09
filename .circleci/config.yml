@@ -1,0 +1,40 @@
+version: 2.1
+
+executors:
+  win-exe-builder:
+    machine:
+      image: "windows-server-2022-gui:current"
+    resource_class: windows.medium
+    shell: powershell.exe
+
+jobs:
+  build-exe:
+    executor: win-exe-builder
+    steps:
+      - checkout
+      - run:
+          name: Install Python 3.11
+          command: |
+            choco install python311 -y --no-progress
+            python -m pip install --upgrade pip
+      - run:
+          name: Install dependencies
+          command: |
+            python -m pip install --upgrade pip setuptools wheel
+            python -m pip install -r requirements.txt
+            python -m pip install --upgrade pyinstaller
+      - run:
+          name: Build all .spec files
+          command: |
+            Get-ChildItem *.spec | ForEach-Object {
+              Write-Host "Building: $($_.Name)"
+              python -m PyInstaller $_.Name --noconfirm --clean
+            }
+      - store_artifacts:
+          path: dist
+          destination: exe
+
+workflows:
+  build:
+    jobs:
+      - build-exe
