@@ -2190,16 +2190,29 @@ class VidaPayTransferApp(tk.Tk):
 
     def _load_brand_assets(self):
         """Load the real GFH logo + window icon (embedded), else render fallbacks."""
-        # Window / taskbar icon from the embedded .ico (with atexit)
+        # Try _MEIPASS first (PyInstaller onefile extraction dir)
+        import sys as _sys, os as _os
+        _meipass = getattr(_sys, "_MEIPASS", None)
+        if _meipass:
+            for _ico_name in ("gfh_bot_icon.ico", "icon.ico"):
+                _ico_path = _os.path.join(_meipass, _ico_name)
+                if _os.path.exists(_ico_path):
+                    try:
+                        self.iconbitmap(default=False, bitmap=_ico_path)
+                        self.iconbitmap(_ico_path)
+                    except Exception:
+                        pass
+                    break
+        # Fallback: decode EMBEDDED_ICON_B64 to %TEMP%
         try:
-            import base64 as _b64, tempfile as _tf, atexit as _ae, os as _os
+            import base64 as _b64, tempfile as _tf
             data = _b64.b64decode(EMBEDDED_ICON_B64.strip())
-            tmp = _tf.NamedTemporaryFile(delete=False, suffix=".ico")
-            tmp.write(data)
-            tmp.close()
-            _ae.register(lambda p=tmp.name: _os.path.exists(p) and _os.unlink(p))
-            self.iconbitmap(default=False, bitmap=tmp.name)
-            self.iconbitmap(tmp.name)
+            _tmp_dir = _os.environ.get("TEMP", _tf.gettempdir())
+            _ico_path = _os.path.join(_tmp_dir, "vidapay_transfer_icon.ico")
+            with open(_ico_path, "wb") as _f:
+                _f.write(data)
+            self.iconbitmap(default=False, bitmap=_ico_path)
+            self.iconbitmap(_ico_path)
         except Exception:
             pass
         # Header logo: embedded real GFH logo first, rendered badge as fallback
