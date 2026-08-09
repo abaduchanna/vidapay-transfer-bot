@@ -2185,13 +2185,18 @@ class VidaPayTransferApp(tk.Tk):
 
     def _load_brand_assets(self):
         """Load the real GFH logo + window icon (embedded), else render fallbacks."""
-        # Window / taskbar icon from the embedded .ico
-        ico_path = self._extract_embedded(EMBEDDED_ICON_B64, "gfh_bot.ico")
-        if ico_path:
-            try:
-                self.iconbitmap(ico_path)
-            except Exception:
-                pass
+        # Window / taskbar icon from the embedded .ico (with atexit)
+        try:
+            import base64 as _b64, tempfile as _tf, atexit as _ae, os as _os
+            data = _b64.b64decode(EMBEDDED_ICON_B64.strip())
+            tmp = _tf.NamedTemporaryFile(delete=False, suffix=".ico")
+            tmp.write(data)
+            tmp.close()
+            _ae.register(lambda p=tmp.name: _os.path.exists(p) and _os.unlink(p))
+            self.iconbitmap(default=False, bitmap=tmp.name)
+            self.iconbitmap(tmp.name)
+        except Exception:
+            pass
         # Header logo: embedded real GFH logo first, rendered badge as fallback
         logo_path = self._extract_embedded(EMBEDDED_LOGO_B64, "gfh_logo_real.png")
         if not logo_path:
