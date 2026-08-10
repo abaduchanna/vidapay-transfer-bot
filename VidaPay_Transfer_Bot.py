@@ -1481,9 +1481,14 @@ class VidaPayTransferApp(tk.Tk):
         self.colors = THEMES[self._resolve_theme()]
 
         self.images = {}
-        # NOTE: AppUserModelID is set in _enable_dpi_awareness() (called from
-        # __main__ BEFORE this Tk window is created). Setting it here would be
-        # too late — Windows has already grouped the taskbar button.
+        # Brute-force taskbar icon: set AppUserModelID so Windows taskbar
+        # shows our icon instead of the generic Python/PyInstaller icon
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "GFHTelecom.App")
+        except Exception:
+            pass
         self._load_brand_assets()
 
         self._build_ui()
@@ -2188,21 +2193,8 @@ class VidaPayTransferApp(tk.Tk):
 
     def _load_brand_assets(self):
         """Load the real GFH logo + window icon (embedded), else render fallbacks."""
-        # Set AppUserModelID AGAIN after Tk creation (before window is shown).
-        # This must be set both BEFORE Tk (in _enable_dpi_awareness) and AFTER
-        # Tk creation but BEFORE the window is realized — Windows needs both
-        # for the taskbar to show the correct icon.
-        try:
-            import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("VidaPay.TransferBot")
-        except Exception:
-            pass
-        # Set the window icon BEFORE any update_idletasks()/mainloop() realizes
-        # the window.  Do NOT use default=False (it breaks taskbar grouping on
-        # some Windows builds) and do NOT call iconbitmap twice.
-        import sys as _sys, os as _os
-        _icon_set = False
         # Try _MEIPASS first (PyInstaller onefile extraction dir)
+        import sys as _sys, os as _os
         _meipass = getattr(_sys, "_MEIPASS", None)
         if _meipass:
             for _ico_name in ("gfh_bot_icon.ico", "gfh_icon_white.ico", "icon.ico"):
@@ -2210,22 +2202,22 @@ class VidaPayTransferApp(tk.Tk):
                 if _os.path.exists(_ico_path):
                     try:
                         self.iconbitmap(_ico_path)
-                        _icon_set = True
+                        self.iconbitmap(_ico_path)
                     except Exception:
                         pass
                     break
-        # Fallback: decode EMBEDDED_ICON_B64 to %TEMP% (only if _MEIPASS failed)
-        if not _icon_set:
-            try:
-                import base64 as _b64, tempfile as _tf
-                data = _b64.b64decode(EMBEDDED_ICON_B64.strip())
-                _tmp_dir = _os.environ.get("TEMP", _tf.gettempdir())
-                _ico_path = _os.path.join(_tmp_dir, "vidapay_transfer_icon.ico")
-                with open(_ico_path, "wb") as _f:
-                    _f.write(data)
-                self.iconbitmap(_ico_path)
-            except Exception:
-                pass
+        # Fallback: decode EMBEDDED_ICON_B64 to %TEMP%
+        try:
+            import base64 as _b64, tempfile as _tf
+            data = _b64.b64decode(EMBEDDED_ICON_B64.strip())
+            _tmp_dir = _os.environ.get("TEMP", _tf.gettempdir())
+            _ico_path = _os.path.join(_tmp_dir, "vidapay_transfer_icon.ico")
+            with open(_ico_path, "wb") as _f:
+                _f.write(data)
+            self.iconbitmap(_ico_path)
+            self.iconbitmap(_ico_path)
+        except Exception:
+            pass
         # Header logo: embedded real GFH logo first, rendered badge as fallback
         logo_path = self._extract_embedded(EMBEDDED_LOGO_B64, "gfh_logo_real.png")
         if not logo_path:
@@ -2743,7 +2735,7 @@ def _enable_dpi_awareness() -> None:
         import ctypes
         # Set AppUserModelID BEFORE any window is created
         try:
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("VidaPay.TransferBot")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("GFHTelecom.App")
         except Exception:
             pass
         try:
