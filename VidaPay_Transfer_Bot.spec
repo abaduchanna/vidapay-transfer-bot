@@ -16,6 +16,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('assets/gfh_bot_icon.ico', '.'),
+        ('gfh_icon_white.ico', '.'),
         ('assets/GFH_Telecom_Logo.png', '.'),
     ],
     hiddenimports=[
