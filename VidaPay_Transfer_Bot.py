@@ -2188,6 +2188,15 @@ class VidaPayTransferApp(tk.Tk):
 
     def _load_brand_assets(self):
         """Load the real GFH logo + window icon (embedded), else render fallbacks."""
+        # Set AppUserModelID AGAIN after Tk creation (before window is shown).
+        # This must be set both BEFORE Tk (in _enable_dpi_awareness) and AFTER
+        # Tk creation but BEFORE the window is realized — Windows needs both
+        # for the taskbar to show the correct icon.
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("VidaPay.TransferBot")
+        except Exception:
+            pass
         # Set the window icon BEFORE any update_idletasks()/mainloop() realizes
         # the window.  Do NOT use default=False (it breaks taskbar grouping on
         # some Windows builds) and do NOT call iconbitmap twice.
