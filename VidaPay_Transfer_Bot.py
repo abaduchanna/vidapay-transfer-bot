@@ -676,6 +676,26 @@ def create_edge_driver(log=print, attach=None):
     return driver
 
 
+
+def create_logo_label(frame, width=100, height=50):
+    """Create logo label with fallback to text"""
+    try:
+        from PIL import Image, ImageTk
+        logo_files = ["GFH_Telecom_Logo.png", "logo.png", "gfh_logo.png"]
+        for logo_file in logo_files:
+            if Path(logo_file).exists():
+                img = Image.open(logo_file)
+                img.thumbnail((width, height), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
+                label = tk.Label(frame, image=photo, bg=BRAND_NAVY)
+                label.image = photo  # Keep reference
+                return label
+    except Exception:
+        pass
+    # Fallback to text
+    return tk.Label(frame, text="GFH", font=("Segoe UI", 16, "bold"), fg=BRAND_RED, bg=BRAND_NAVY)
+
+
 class VidapayTransferSystem:
     """Standalone CRM logic for Inventory Reassignment with proper login flow."""
 
