@@ -15,6 +15,7 @@ a = Analysis(
     pathex=['.'],
     binaries=[],
     datas=[
+        ('assets', 'assets'),
         ('theme_manager.py', '.'),
     ],
     hiddenimports = [
