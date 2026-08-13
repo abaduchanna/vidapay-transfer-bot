@@ -15,7 +15,6 @@ a = Analysis(
     pathex=['.'],
     binaries=[],
     datas=[
-        ('gfh_icon_white.ico', '.'),
         ('theme_manager.py', '.'),
     ],
     hiddenimports = [
