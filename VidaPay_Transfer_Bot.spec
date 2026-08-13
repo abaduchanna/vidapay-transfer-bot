@@ -12,12 +12,11 @@ block_cipher = None
 
 a = Analysis(
     ['VidaPay_Transfer_Bot.py'],
-    pathex=[],
+    pathex=['.'],
     binaries=[],
     datas=[
-        ('assets/gfh_bot_icon.ico', '.'),
         ('gfh_icon_white.ico', '.'),
-        ('assets/GFH_Telecom_Logo.png', '.'),
+        ('theme_manager.py', '.'),
     ],
     hiddenimports = [
 
