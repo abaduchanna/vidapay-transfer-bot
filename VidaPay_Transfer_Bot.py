@@ -16,6 +16,8 @@ import importlib.util
 import threading
 import tkinter as tk
 from theme_manager import ThemeManager, apply_theme_to_window, get_copyright_year
+from header_manager import FixedHeaderManager
+from logo_handler import LogoHandler
 from tkinter import ttk, messagebox, scrolledtext, filedialog
 from datetime import datetime
 
@@ -1518,42 +1520,8 @@ class VidaPayTransferApp(tk.Tk):
         threading.Thread(target=self._auto_setup_deps, daemon=True).start()
 
     def _build_ui(self):
-        # ---- GFH header: logo, title, theme selector ----
-        header = tk.Frame(self, height=84, bg=self.colors["navy"])
-        header.pack(fill=tk.X)
-        header._tag = "header"
-
-        head_row = tk.Frame(header, bg=self.colors["navy"])
-        head_row.pack(fill=tk.X, padx=18, pady=(10, 8))
-        head_row._tag = "header"
-
-        if self.images.get("logo"):
-            logo_lbl = tk.Label(head_row, image=self.images["logo"], bd=0)
-            logo_lbl.image = self.images["logo"]
-            logo_lbl.pack(side=tk.LEFT, padx=(0, 14))
-            logo_lbl._tag = "header_label"
-
-        title_col = tk.Frame(head_row, bg=self.colors["navy"])
-        title_col.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        title_col._tag = "header"
-        title_lbl = tk.Label(
-            title_col,
-            text="GFH Inventory Transfer Bot",
-            font=("Segoe UI", 18, "bold"),
-            fg="#ffffff",
-            bg=self.colors["navy"],
-        )
-        title_lbl.pack(anchor="w")
-        title_lbl._tag = "header_label"
-        sub_lbl = tk.Label(
-            title_col,
-            text="VidaPay Reassignment  \u00b7  WhatsApp OCR Extractor",
-            font=("Segoe UI", 10),
-            fg="#c8cdf0",
-            bg=self.colors["navy"],
-        )
-        sub_lbl.pack(anchor="w")
-        sub_lbl._tag = "header_label"
+        # ---- GFH header (FixedHeaderManager) ----
+        self.header_mgr = FixedHeaderManager(self, title="VidaPay Transfer Bot")
 
         theme_box = tk.Frame(head_row, bg=self.colors["navy"])
         theme_box.pack(side=tk.RIGHT)
