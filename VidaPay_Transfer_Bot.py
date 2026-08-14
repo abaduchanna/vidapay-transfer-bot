@@ -1528,7 +1528,9 @@ class VidaPayTransferApp(tk.Tk):
         # ---- GFH header (FixedHeaderManager) ----
         self.header_mgr = FixedHeaderManager(self, title="VidaPay Transfer Bot")
 
-        theme_box = tk.Frame(head_row, bg=self.colors["navy"])
+        # Theme toggle — attach to the header frame created by FixedHeaderManager
+        _header_frame = self.header_mgr.header_frame if hasattr(self.header_mgr, 'header_frame') else self
+        theme_box = tk.Frame(_header_frame, bg=self.colors["navy"])
         theme_box.pack(side=tk.RIGHT)
         theme_box._tag = "header"
         theme_lbl = tk.Label(
