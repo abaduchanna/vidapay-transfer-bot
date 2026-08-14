@@ -1617,6 +1617,13 @@ class VidaPayTransferApp(tk.Tk):
         )
         self.progress.pack(fill=tk.X)
 
+        # Copyright footer
+        _cbar = tk.Frame(self, bg="#090d26", height=24)
+        _cbar.pack(fill=tk.X, side="bottom")
+        _cbar.pack_propagate(False)
+        tk.Label(_cbar, text=f"Developed by Abad Umair Channa | Copyright © {date.today().year} | All rights reserved.",
+                 font=("Segoe UI", 8), fg="#9d9db8", bg="#090d26").pack(side="left", padx=14, pady=3)
+
     def _build_config_tab(self):
         config_container = tk.Frame(self.tab_config)
         config_container.pack(fill=tk.X, padx=10, pady=10)
