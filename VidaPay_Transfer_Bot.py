@@ -1518,6 +1518,10 @@ class VidaPayTransferApp(tk.Tk):
             pass
         self._load_brand_assets()
 
+        # Create ThemeManager BEFORE _build_ui (add_theme_toggle needs it)
+        from theme_manager import ThemeManager
+        self.theme_manager = ThemeManager(app_name="vidapay-transfer-bot")
+
         self._build_ui()
         self._apply_theme()
         self.after(100, self._process_log_queue)
@@ -1527,6 +1531,9 @@ class VidaPayTransferApp(tk.Tk):
     def _build_ui(self):
         # ---- GFH header (FixedHeaderManager) ----
         self.header_mgr = FixedHeaderManager(self, title="VidaPay Transfer Bot")
+        # Tag the header frame as protected (immune to theme toggle)
+        if hasattr(self.header_mgr, 'header_frame'):
+            self.header_mgr.header_frame._tag = "header"
         try:
             _lp = _resource_path("GFH_Telecom_Logo.png") if "_resource_path" in dir() else os.path.join(os.path.dirname(os.path.abspath(__file__)), "GFH_Telecom_Logo.png")
             if os.path.exists(_lp):
