@@ -1503,6 +1503,7 @@ class VidaPayTransferApp(tk.Tk):
         self.theme_setting = str(
             self.config_data.get("theme", "system")
         ).lower()
+        self.header_mgr.add_theme_toggle(self.theme_manager, callback=self._apply_theme)
         if hasattr(self.header_mgr, "header_frame"):
             self.header_mgr.header_frame._tag = "header"
             for child in self.header_mgr.header_frame.winfo_children():
@@ -1518,7 +1519,6 @@ class VidaPayTransferApp(tk.Tk):
                 self.header_mgr.set_logo(logo_path=_lp, text="GFH")
         except Exception:
             pass
-        self.header_mgr.add_theme_toggle(self.theme_manager, callback=self._apply_theme)
         if self.theme_setting not in ("system", "light", "dark"):
             self.theme_setting = "system"
         self.colors = THEMES[self._resolve_theme()]
