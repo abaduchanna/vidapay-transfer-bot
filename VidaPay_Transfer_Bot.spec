@@ -24,7 +24,6 @@ a = Analysis(
 
         'tkinter',
         '_tkinter',
-        'tkinter._fix',
         'selenium',
         'selenium.webdriver',
         'selenium.webdriver.chrome',
@@ -55,9 +54,6 @@ a = Analysis(
         'logo_handler',
         'PIL',
         'pandas',
-        'gspread',
-        'oauth2client',
-        'pywin32',
         'selenium.webdriver.edge.webdriver',
         'selenium.webdriver.edge.options',
         'selenium.webdriver.edge.service',
