@@ -16,6 +16,8 @@ a = Analysis(
     binaries=[],
     datas=[
         ('assets', 'assets'),
+        ('vidapay_icon.ico', '.'),
+        ('GFH_Telecom_Logo.png', '.'),
         ('theme_manager.py', '.'),
         ('logo_handler.py', '.'),
         ('header_manager.py', '.'),
