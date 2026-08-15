@@ -1531,6 +1531,12 @@ class VidaPayTransferApp(tk.Tk):
     def _build_ui(self):
         # ---- GFH header (FixedHeaderManager) ----
         self.header_mgr = FixedHeaderManager(self, title="VidaPay Transfer Bot")
+        if hasattr(self.header_mgr, "header_frame"):
+            self.header_mgr.header_frame._tag = "header"
+            for child in self.header_mgr.header_frame.winfo_children():
+                child._tag = "header"
+                for grandchild in child.winfo_children():
+                    grandchild._tag = "header_label"
         # Tag the header frame as protected (immune to theme toggle)
         if hasattr(self.header_mgr, 'header_frame'):
             self.header_mgr.header_frame._tag = "header"
