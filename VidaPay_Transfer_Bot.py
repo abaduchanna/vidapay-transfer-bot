@@ -24,7 +24,7 @@ from theme_manager import ThemeManager, apply_theme_to_window, get_copyright_yea
 from header_manager import FixedHeaderManager
 from logo_handler import LogoHandler
 from tkinter import ttk, messagebox, scrolledtext, filedialog
-from datetime import datetime
+from datetime import datetime, date
 
 # Additional requirements
 import schedule
