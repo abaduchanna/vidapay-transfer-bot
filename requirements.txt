@@ -1,7 +1,10 @@
-# Standardized requirements for GFH/VidaPay applications
+# Transfer bot: Selenium + OCR + scheduling
 # Developed by Abad Umair Channa
 
-pillow>=10.0.0
+selenium>=4.0.0
 openpyxl>=3.1.0
 pandas>=2.0.0
+Pillow>=9.0.0
+pytesseract>=0.3.10
+schedule>=1.1.0
 requests>=2.31.0

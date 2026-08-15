@@ -1547,7 +1547,7 @@ class VidaPayTransferApp(tk.Tk):
             theme_box,
             text="",
             width=12,
-            command=self._toggle_theme,
+            command=self._toggle,
         )
         self.theme_btn.pack(side=tk.LEFT)
         self._update_theme_btn()
@@ -1965,7 +1965,7 @@ class VidaPayTransferApp(tk.Tk):
         except Exception:
             return "light"
 
-    def _toggle_theme(self):
+    def _toggle(self):
         """One-click toggle between light and dark (no dropdown)."""
         current = self._resolve_theme()
         self.theme_setting = "dark" if current == "light" else "light"
