@@ -1503,22 +1503,6 @@ class VidaPayTransferApp(tk.Tk):
         self.theme_setting = str(
             self.config_data.get("theme", "system")
         ).lower()
-        self.header_mgr.add_theme_toggle(self.theme_manager, callback=self._apply_theme)
-        if hasattr(self.header_mgr, "header_frame"):
-            self.header_mgr.header_frame._tag = "header"
-            for child in self.header_mgr.header_frame.winfo_children():
-                child._tag = "header"
-                for grandchild in child.winfo_children():
-                    grandchild._tag = "header_label"
-        # Tag the header frame as protected (immune to theme toggle)
-        if hasattr(self.header_mgr, 'header_frame'):
-            self.header_mgr.header_frame._tag = "header"
-        try:
-            _lp = _resource_path("GFH_Telecom_Logo.png") if "_resource_path" in dir() else os.path.join(os.path.dirname(os.path.abspath(__file__)), "GFH_Telecom_Logo.png")
-            if os.path.exists(_lp):
-                self.header_mgr.set_logo(logo_path=_lp, text="GFH")
-        except Exception:
-            pass
         if self.theme_setting not in ("system", "light", "dark"):
             self.theme_setting = "system"
         self.colors = THEMES[self._resolve_theme()]
@@ -1547,6 +1531,24 @@ class VidaPayTransferApp(tk.Tk):
     def _build_ui(self):
         # ---- GFH header (FixedHeaderManager) ----
         self.header_mgr = FixedHeaderManager(self, title="VidaPay Transfer Bot")
+        # Tag header as protected (immune to theme toggle)
+        if hasattr(self.header_mgr, 'header_frame'):
+            self.header_mgr.header_frame._tag = "header"
+            for child in self.header_mgr.header_frame.winfo_children():
+                child._tag = "header"
+                for grandchild in child.winfo_children():
+                    grandchild._tag = "header_label"
+        # Load logo
+        try:
+            _lp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "GFH_Telecom_Logo.png")
+            if not os.path.exists(_lp) and hasattr(sys, '_MEIPASS'):
+                _lp = os.path.join(sys._MEIPASS, "GFH_Telecom_Logo.png")
+            if os.path.exists(_lp):
+                self.header_mgr.set_logo(logo_path=_lp, text="GFH")
+        except Exception:
+            pass
+        # Add theme toggle
+        self.header_mgr.add_theme_toggle(self.theme_manager, callback=self._apply_theme)
 
         # Theme toggle — attach to the header frame created by FixedHeaderManager
         _header_frame = self.header_mgr.header_frame if hasattr(self.header_mgr, 'header_frame') else self
