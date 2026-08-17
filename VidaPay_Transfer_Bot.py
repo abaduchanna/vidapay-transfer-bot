@@ -1521,6 +1521,11 @@ class VidaPayTransferApp(tk.Tk):
         # Create ThemeManager BEFORE _build_ui (add_theme_toggle needs it)
         from theme_manager import ThemeManager
         self.theme_manager = ThemeManager(app_name="vidapay-transfer-bot")
+        # Sync it to the app's real saved theme setting so the header's
+        # sun/moon icon starts in the correct state (ThemeManager keeps
+        # its own separate theme.json otherwise, which can disagree with
+        # self.theme_setting loaded from this app's own config above).
+        self.theme_manager.current_theme = self._resolve_theme()
 
         self._build_ui()
         self._apply_theme()
@@ -1548,7 +1553,7 @@ class VidaPayTransferApp(tk.Tk):
         except Exception:
             pass
         # Add theme toggle
-        self.header_mgr.add_theme_toggle(self.theme_manager, callback=self._apply_theme)
+        self.header_mgr.add_theme_toggle(self.theme_manager, callback=self._on_header_theme_toggle)
 
         # Theme toggle — attach to the header frame created by FixedHeaderManager
         _header_frame = self.header_mgr.header_frame if hasattr(self.header_mgr, 'header_frame') else self
@@ -1971,6 +1976,23 @@ class VidaPayTransferApp(tk.Tk):
         if self.theme_setting == "system":
             return self._detect_system_theme()
         return self.theme_setting
+
+    def _on_header_theme_toggle(self):
+        """Callback for the header's sun/moon button.
+
+        The header toggle flips self.theme_manager.current_theme (an
+        imported ThemeManager instance used only to drive the icon), but
+        _apply_theme()/_style_ttk()/_theme_walk() actually read a
+        different variable, self.theme_setting. Previously this callback
+        pointed straight at self._apply_theme(), so clicking the header
+        button changed the icon but nothing else on screen. Sync the two
+        here so the header button drives the app's real theme state.
+        """
+        self.theme_setting = self.theme_manager.current_theme
+        self.config_data["theme"] = self.theme_setting
+        save_config(self.config_data)
+        self._apply_theme()
+        self._update_theme_btn()
 
     def _detect_system_theme(self):
         """Follow the Windows light/dark mode when 'System' is selected."""
