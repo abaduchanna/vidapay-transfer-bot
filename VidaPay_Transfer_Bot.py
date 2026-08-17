@@ -141,8 +141,12 @@ pytesseract.pytesseract.tesseract_cmd = _locate_tesseract()
 # (installed extensions such as the USA PLANET VPN add-on show in the
 # toolbar), you connect your VPN inside it, and Selenium attaches to the
 # already-open browser through the remote debugging port.
-AUTOMATION_PROFILE_DIR = r"C:\VidaPay_Edge_Automation_Profile"
-REMOTE_DEBUGGING_PORT = 9222
+# Distinct from Extractor (port 9222) and Ordering (port 9223) so
+# running multiple GFH/VidaPay tools at once each gets its own Edge
+# process/window instead of colliding on a shared profile+port and
+# opening as tabs inside whichever tool launched first.
+AUTOMATION_PROFILE_DIR = r"C:\VidaPay_Edge_Automation_Profile_TransferBot"
+REMOTE_DEBUGGING_PORT = 9224
 ATTACH_TO_OPEN_EDGE = True
 PAGE_LOAD_TIMEOUT = 90
 
