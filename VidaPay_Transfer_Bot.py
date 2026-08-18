@@ -1716,13 +1716,23 @@ class VidaPayTransferApp(tk.Tk):
             row=1, column=0, columnspan=2, padx=10, pady=2, sticky=tk.W
         )
 
+        # WhatsApp mode selector: Desktop App (pyautogui) or Web (browser tab)
+        wa_mode_frame = tk.Frame(bot_frame)
+        wa_mode_frame.grid(row=2, column=0, columnspan=2, padx=10, pady=(4, 2), sticky=tk.W)
+        tk.Label(wa_mode_frame, text="Send via:").pack(side=tk.LEFT, padx=(0, 8))
+        self.wa_mode_var = tk.StringVar(value=self.config_data.get("whatsapp_mode", "web"))
+        tk.Radiobutton(wa_mode_frame, text="Desktop App", variable=self.wa_mode_var,
+                       value="desktop").pack(side=tk.LEFT, padx=(0, 6))
+        tk.Radiobutton(wa_mode_frame, text="WhatsApp Web", variable=self.wa_mode_var,
+                       value="web").pack(side=tk.LEFT)
+
         tk.Label(bot_frame, text="Schedule (HH:MM):").grid(
-            row=2, column=0, padx=10, pady=5, sticky=tk.W
+            row=3, column=0, padx=10, pady=5, sticky=tk.W
         )
         self.entry_schedule = ttk.Entry(bot_frame, width=25)
         self.entry_schedule.insert(0, self.schedule_times)
         self.entry_schedule.grid(
-            row=2, column=1, padx=10, pady=5, sticky=tk.W
+            row=3, column=1, padx=10, pady=5, sticky=tk.W
         )
 
         self.btn_save = self._make_btn(
@@ -1735,7 +1745,7 @@ class VidaPayTransferApp(tk.Tk):
             width=None,
             tag="save",
         )
-        self.btn_save.grid(row=3, column=0, columnspan=2, pady=6)
+        self.btn_save.grid(row=4, column=0, columnspan=2, pady=6)
 
         map_frame = ttk.LabelFrame(
             self.tab_config, text="Store Name to Account ID Mappings"
@@ -1873,6 +1883,7 @@ class VidaPayTransferApp(tk.Tk):
         self.config_data["transfer_wa_group"] = (
             self.txt_wa_groups.get("1.0", tk.END).strip()
         )
+        self.config_data["whatsapp_mode"] = self.wa_mode_var.get()
         self.config_data["transfer_schedule"] = (
             self.entry_schedule.get().strip()
         )
@@ -2659,9 +2670,10 @@ class VidaPayTransferApp(tk.Tk):
 
         self.stop_event.clear()
         self.ui_state_running()
+        wa_mode = self.wa_mode_var.get()
         threading.Thread(
             target=self._bot_workflow,
-            args=(acc, usr, pwd, wa_groups_str),
+            args=(acc, usr, pwd, wa_groups_str, wa_mode),
             daemon=True,
         ).start()
 
@@ -2669,7 +2681,7 @@ class VidaPayTransferApp(tk.Tk):
         self.log_msg("Sending stop signal... Please wait.")
         self.stop_event.set()
 
-    def _bot_workflow(self, crm_acc, crm_usr, crm_pwd, wa_groups_str):
+    def _bot_workflow(self, crm_acc, crm_usr, crm_pwd, wa_groups_str, wa_mode="web"):
         self.log_msg("=== Starting Transfer Bot Workflow ===")
         wa_scraper = None
         crm_system = None
@@ -2705,19 +2717,46 @@ class VidaPayTransferApp(tk.Tk):
                 self.log_msg("Failed to log in to CRM. Aborting run.")
                 return
 
-            # 2. Extractor: WhatsApp Web opens in a SECOND TAB of the same
-            # browser session, alongside the still-open VidaPay tab
-            wa_scraper = WhatsAppScraper(
-                wa_groups_str, self.log_msg, self.stop_event
-            )
-            if not wa_scraper.start_whatsapp(
-                shared_driver=crm_system.driver
-            ):
-                self.log_msg(
-                    "Failed to open WhatsApp Web in the shared browser. "
-                    "Aborting run."
+            # 2. WhatsApp: Web tab (default) or Desktop pyautogui
+            if wa_mode == "desktop":
+                self.log_msg("WhatsApp mode: Desktop App (pyautogui)")
+                # Use pyautogui to focus WhatsApp Desktop and search group
+                try:
+                    import pyautogui as _pag
+                    import ctypes, time as _t
+                    _pag.FAILSAFE = False
+                    groups = [g.strip() for g in wa_groups_str.split(",") if g.strip()]
+                    for grp in groups:
+                        # Focus WhatsApp Desktop
+                        import win32gui
+                        def _find_wa(hwnd, _):
+                            if win32gui.IsWindowVisible(hwnd) and "WhatsApp" in (win32gui.GetWindowText(hwnd) or ""):
+                                ctypes.windll.user32.SetForegroundWindow(hwnd)
+                        win32gui.EnumWindows(_find_wa, None)
+                        _t.sleep(1.0)
+                        _pag.hotkey("ctrl", "f"); _t.sleep(0.7)
+                        _pag.hotkey("ctrl", "a"); _t.sleep(0.2)
+                        _pag.write(grp, interval=0.05); _t.sleep(1.2)
+                        _pag.press("enter"); _t.sleep(1.5)
+                        _pag.write("Transfer complete", interval=0.05)
+                        _t.sleep(0.5); _pag.press("enter"); _t.sleep(0.5)
+                        self.log_msg(f"WhatsApp Desktop message sent to '{grp}'.")
+                except Exception as e:
+                    self.log_msg(f"WhatsApp Desktop send error: {e}")
+                wa_scraper = None
+            else:
+                self.log_msg("WhatsApp mode: WhatsApp Web (browser tab)")
+                wa_scraper = WhatsAppScraper(
+                    wa_groups_str, self.log_msg, self.stop_event
                 )
-                return
+                if not wa_scraper.start_whatsapp(
+                    shared_driver=crm_system.driver
+                ):
+                    self.log_msg(
+                        "Failed to open WhatsApp Web in the shared browser. "
+                        "Aborting run."
+                    )
+                    return
 
             tasks = wa_scraper.find_and_read_groups(self.mappings)
             self.log_msg(
