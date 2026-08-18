@@ -2254,8 +2254,8 @@ class VidaPayTransferApp(tk.Tk):
                 _ico_path = _os.path.join(_meipass, _ico_name)
                 if _os.path.exists(_ico_path):
                     try:
-                        self.iconbitmap(_ico_path)
-                        self.iconbitmap(_ico_path)
+                        self.iconbitmap(default=_ico_path)
+                        self.after(200, lambda p=_ico_path: self.iconbitmap(default=p))
                     except Exception:
                         pass
                     break
@@ -2267,8 +2267,8 @@ class VidaPayTransferApp(tk.Tk):
             _ico_path = _os.path.join(_tmp_dir, "vidapay_transfer_icon.ico")
             with open(_ico_path, "wb") as _f:
                 _f.write(data)
-            self.iconbitmap(_ico_path)
-            self.iconbitmap(_ico_path)
+            self.iconbitmap(default=_ico_path)
+            self.after(200, lambda p=_ico_path: self.iconbitmap(default=p))
         except Exception:
             pass
         # Header logo: embedded real GFH logo first, rendered badge as fallback
