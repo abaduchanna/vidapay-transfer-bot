@@ -1512,14 +1512,6 @@ class VidaPayTransferApp(tk.Tk):
         self.colors = THEMES[self._resolve_theme()]
 
         self.images = {}
-        # Brute-force taskbar icon: set AppUserModelID so Windows taskbar
-        # shows our icon instead of the generic Python/PyInstaller icon
-        try:
-            import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "GFHTelecom.App")
-        except Exception:
-            pass
         self._load_brand_assets()
 
         # Create ThemeManager BEFORE _build_ui (add_theme_toggle needs it)
@@ -2824,10 +2816,6 @@ def _enable_dpi_awareness() -> None:
         import ctypes
         # Set AppUserModelID BEFORE any window is created
         try:
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("GFHTelecom.App")
-        except Exception:
-            pass
-        try:
             ctypes.windll.shcore.SetProcessDpiAwareness(1)  # system DPI aware
         except Exception:
             ctypes.windll.user32.SetProcessDPIAware()
@@ -2836,6 +2824,14 @@ def _enable_dpi_awareness() -> None:
 
 
 if __name__ == "__main__":
+    # AppUserModelID MUST be set before VidaPayTransferApp() — that class
+    # inherits tk.Tk so the window is created during instantiation.
+    # Setting it inside __init__ is already too late; Windows ignores it.
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("VidaPay.TransferBot")
+    except Exception:
+        pass
     _enable_dpi_awareness()
     app = VidaPayTransferApp()
     app.mainloop()
