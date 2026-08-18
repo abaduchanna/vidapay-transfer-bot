@@ -1552,28 +1552,10 @@ class VidaPayTransferApp(tk.Tk):
         self.header_mgr.add_theme_toggle(self.theme_manager, callback=self._on_header_theme_toggle)
 
         # Theme toggle — attach to the header frame created by FixedHeaderManager
-        _header_frame = self.header_mgr.header_frame if hasattr(self.header_mgr, 'header_frame') else self
-        theme_box = tk.Frame(_header_frame, bg=self.colors["navy"])
-        theme_box.pack(side=tk.RIGHT)
-        theme_box._tag = "header"
-        theme_lbl = tk.Label(
-            theme_box,
-            text="Theme",
-            font=("Segoe UI", 9, "bold"),
-            fg="#c8cdf0",
-            bg=self.colors["navy"],
-        )
-        theme_lbl.pack(side=tk.LEFT, padx=(0, 8))
-        theme_lbl._tag = "header_label"
-        # One-click toggle between light and dark, instead of a dropdown.
-        self.theme_btn = ttk.Button(
-            theme_box,
-            text="",
-            width=12,
-            command=self._toggle,
-        )
-        self.theme_btn.pack(side=tk.LEFT)
-        self._update_theme_btn()
+        # Theme toggle is handled by header_mgr.add_theme_toggle() above.
+        # The old manual theme_box/theme_btn block has been removed to
+        # eliminate the duplicate "Theme / Switch to Dark" button that was
+        # appearing alongside the header's sun/moon toggle.
 
         # ---- Body ----
         self.notebook = ttk.Notebook(self)

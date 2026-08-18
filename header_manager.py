@@ -136,19 +136,29 @@ class FixedHeaderManager:
         self.theme_toggle_btn.pack(side=tk.TOP, pady=5)
     
     def add_copyright(self, theme_manager):
-        """Add copyright text to header."""
+        """Build a pinned footer bar (dark navy, never theme-changes) with centered copyright text."""
         copyright_text = theme_manager.get_copyright_text()
-        
+
+        self.footer_frame = tk.Frame(
+            self.parent,
+            bg=self.BRAND_NAVY,
+            height=24,
+        )
+        self.footer_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        self.footer_frame.pack_propagate(False)
+        self.footer_frame._tag = "footer"
+
         self.copyright_label = tk.Label(
-            self.right_frame,
+            self.footer_frame,
             text=copyright_text,
-            font=("Segoe UI", 7),
-            fg="white",
+            font=("Segoe UI", 8),
+            fg="#c7cbe0",
             bg=self.BRAND_NAVY,
             highlightthickness=0,
             borderwidth=0
         )
-        self.copyright_label.pack(side=tk.BOTTOM, pady=2)
+        self.copyright_label.place(relx=0.5, rely=0.5, anchor="center")
+        self.copyright_label._tag = "footer"
     
     def update_button_text(self):
         """Update toggle button text ONLY - never change header colors."""
