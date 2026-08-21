@@ -2816,4 +2816,5 @@ if __name__ == "__main__":
         pass
     _enable_dpi_awareness()
     app = VidaPayTransferApp()
+    app.after(10, lambda: app.state("zoomed"))
     app.mainloop()
