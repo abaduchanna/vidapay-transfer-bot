@@ -37,19 +37,19 @@ class FixedHeaderManager:
         self.height = height
         self.theme_manager = None
         
-        # Create header frame - ALWAYS NAVY
+        # Create header frame - ALWAYS NAVY, fixed height matching audit
         self.header_frame = tk.Frame(
             parent,
-            height=height,
+            height=90,
             bg=self.BRAND_NAVY
         )
         self.header_frame.pack(fill=tk.X)
         self.header_frame.pack_propagate(False)
-        
+
         # LEFT: Logo
         self.left_frame = tk.Frame(self.header_frame, bg=self.BRAND_NAVY)
-        self.left_frame.pack(side=tk.LEFT, padx=15, pady=10)
-        
+        self.left_frame.pack(side=tk.LEFT, padx=(18, 0), pady=9)
+
         self.logo_label = tk.Label(
             self.left_frame,
             text="",
@@ -60,11 +60,23 @@ class FixedHeaderManager:
             borderwidth=0
         )
         self.logo_label.pack()
-        
-        # CENTER: Title (centered)
+
+        # Red vertical divider
+        self.divider_frame = tk.Frame(self.header_frame, bg=self.BRAND_RED, width=3)
+        self.divider_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(14, 0), pady=12)
+        self.divider_frame._tag = "header"
+
+        # RIGHT: pack BEFORE center so toggle anchors right and center truly fills middle
+        self.right_frame = tk.Frame(self.header_frame, bg=self.BRAND_NAVY)
+        self.right_frame.pack(side=tk.RIGHT, padx=(0, 18), pady=9)
+
+        self.theme_toggle_btn = None
+        self.copyright_label = None
+
+        # CENTER: Title — fills remaining space, place(relx=0.5) centers within it
         self.center_frame = tk.Frame(self.header_frame, bg=self.BRAND_NAVY)
-        self.center_frame.pack(side=tk.LEFT, expand=True, fill=tk.X)
-        
+        self.center_frame.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=(14, 0))
+
         self.title_label = tk.Label(
             self.center_frame,
             text=title,
@@ -75,14 +87,16 @@ class FixedHeaderManager:
             borderwidth=0,
             anchor="center"
         )
-        self.title_label.pack(expand=True, fill=tk.BOTH)
-        
-        # RIGHT: Theme toggle + Copyright
-        self.right_frame = tk.Frame(self.header_frame, bg=self.BRAND_NAVY)
-        self.right_frame.pack(side=tk.RIGHT, padx=15, pady=5)
-        
-        self.theme_toggle_btn = None
-        self.copyright_label = None
+        self.title_label.place(relx=0.5, rely=0.5, anchor="center")
+
+        # Tag all header widgets
+        self.header_frame._tag  = "header"
+        self.left_frame._tag    = "header"
+        self.center_frame._tag  = "header"
+        self.right_frame._tag   = "header"
+        self.logo_label._tag    = "header"
+        self.title_label._tag   = "header"
+        self.divider_frame._tag = "header"
     
     def set_logo(self, logo_path=None, text="Logo"):
         """Set the logo in the header."""
@@ -92,7 +106,7 @@ class FixedHeaderManager:
                 img = Image.open(logo_path)
                 if img.mode not in ("RGBA", "LA"):
                     img = img.convert("RGBA")
-                img.thumbnail((190, 80), _get_resampling())
+                img.thumbnail((190, 72), _get_resampling())
                 self.photo = ImageTk.PhotoImage(img)
                 self.logo_label.configure(image=self.photo, text="")
                 return
