@@ -73,12 +73,11 @@ class FixedHeaderManager:
         self.theme_toggle_btn = None
         self.copyright_label = None
 
-        # CENTER: Title — fills remaining space, place(relx=0.5) centers within it
-        self.center_frame = tk.Frame(self.header_frame, bg=self.BRAND_NAVY)
-        self.center_frame.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=(14, 0))
-
+        # CENTER: Title — placed DIRECTLY on header_frame with relx=0.5 so
+        # it is truly centered relative to the ENTIRE header width, regardless
+        # of how wide the logo on the left is.
         self.title_label = tk.Label(
-            self.center_frame,
+            self.header_frame,
             text=title,
             font=("Segoe UI", 16, "bold"),
             fg="white",
@@ -92,7 +91,6 @@ class FixedHeaderManager:
         # Tag all header widgets
         self.header_frame._tag  = "header"
         self.left_frame._tag    = "header"
-        self.center_frame._tag  = "header"
         self.right_frame._tag   = "header"
         self.logo_label._tag    = "header"
         self.title_label._tag   = "header"
@@ -171,7 +169,7 @@ class FixedHeaderManager:
             highlightthickness=0,
             borderwidth=0
         )
-        self.copyright_label.place(relx=0.5, rely=0.5, anchor="center")
+        self.copyright_label.pack(expand=True, fill="both")
         self.copyright_label._tag = "footer"
     
     def update_button_text(self):
