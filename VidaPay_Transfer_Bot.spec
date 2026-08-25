@@ -53,6 +53,8 @@ a = Analysis(
         'theme_manager',
         'logo_handler',
         'PIL',
+        'pandas',
+        'pyautogui',
         'selenium.webdriver.edge.webdriver',
         'selenium.webdriver.edge.options',
         'selenium.webdriver.edge.service',
