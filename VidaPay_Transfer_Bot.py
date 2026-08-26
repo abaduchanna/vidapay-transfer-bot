@@ -58,7 +58,7 @@ if not os.path.exists(APP_DATA_DIR):
 
 CONFIG_FILE = os.path.join(APP_DATA_DIR, "transfer_bot_config.json")
 
-# GFH brand assets embedded as base64 (injected at build time) so the bot
+# VidaPay brand assets embedded as base64 (injected at build time) so the bot
 # stays a single self-contained file. When empty, the PIL-rendered fallbacks
 # are used instead.
 EMBEDDED_LOGO_B64 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "embedded_logo_b64.txt"), "r").read().strip() if not getattr(sys, "frozen", False) else open(os.path.join(getattr(sys, "_MEIPASS", "."), "assets", "embedded_logo_b64.txt"), "r").read().strip()
@@ -142,7 +142,7 @@ pytesseract.pytesseract.tesseract_cmd = _locate_tesseract()
 # toolbar), you connect your VPN inside it, and Selenium attaches to the
 # already-open browser through the remote debugging port.
 # Distinct from Extractor (port 9222) and Ordering (port 9223) so
-# running multiple GFH/VidaPay tools at once each gets its own Edge
+# running multiple VidaPay tools at once each gets its own Edge
 # process/window instead of colliding on a shared profile+port and
 # opening as tabs inside whichever tool launched first.
 AUTOMATION_PROFILE_DIR = r"C:\VidaPay_Edge_Automation_Profile_TransferBot"
@@ -154,7 +154,7 @@ CRM_MAIN_PANEL_URL = "https://www.vidapaycrm.com/Main%20Panel.aspx"
 CRM_LOGIN_URL = "https://www.vidapaycrm.com/Login.aspx"
 
 # ----------------------------------------------------------------------------
-# GFH THEME PALETTES (light / dark) - brand: deep navy + signal red
+# VidaPay THEME PALETTES (light / dark) - brand: deep navy + signal red
 # ----------------------------------------------------------------------------
 THEMES = {
     "light": {
@@ -692,7 +692,7 @@ def create_logo_label(frame, width=100, height=50):
     """Create logo label with fallback to text"""
     try:
         from PIL import Image, ImageTk
-        logo_files = ["GFH_Telecom_Logo.png", "logo.png", "gfh_logo.png"]
+        logo_files = ["VidaPay_Logo.png", "vidapay_logo.png", "logo.png"]
         for logo_file in logo_files:
             if Path(logo_file).exists():
                 img = Image.open(logo_file)
@@ -704,7 +704,7 @@ def create_logo_label(frame, width=100, height=50):
     except Exception:
         pass
     # Fallback to text
-    return tk.Label(frame, text="GFH", font=("Segoe UI", 16, "bold"), fg=BRAND_RED, bg=BRAND_NAVY)
+    return tk.Label(frame, text="VidaPay", font=("Segoe UI", 16, "bold"), fg=BRAND_RED, bg=BRAND_NAVY)
 
 
 class VidapayTransferSystem:
@@ -1503,7 +1503,7 @@ class VidaPayTransferApp(tk.Tk):
         )
         self.history = self.config_data.get("transfer_history", [])
 
-        # GFH theme: 'system' follows Windows, otherwise explicit light/dark
+        # VidaPay theme: 'system' follows Windows, otherwise explicit light/dark
         self.theme_setting = str(
             self.config_data.get("theme", "system")
         ).lower()
@@ -1530,7 +1530,7 @@ class VidaPayTransferApp(tk.Tk):
         threading.Thread(target=self._auto_setup_deps, daemon=True).start()
 
     def _build_ui(self):
-        # ---- GFH header (FixedHeaderManager) ----
+        # ---- VidaPay header (FixedHeaderManager) ----
         self.header_mgr = FixedHeaderManager(self, title="VidaPay Transfer Bot")
         # Tag header as protected (immune to theme toggle)
         if hasattr(self.header_mgr, 'header_frame'):
@@ -1541,11 +1541,11 @@ class VidaPayTransferApp(tk.Tk):
                     grandchild._tag = "header_label"
         # Load logo
         try:
-            _lp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "GFH_Telecom_Logo.png")
+            _lp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "VidaPay_Logo.png")
             if not os.path.exists(_lp) and hasattr(sys, '_MEIPASS'):
-                _lp = os.path.join(sys._MEIPASS, "GFH_Telecom_Logo.png")
+                _lp = os.path.join(sys._MEIPASS, "VidaPay_Logo.png")
             if os.path.exists(_lp):
-                self.header_mgr.set_logo(logo_path=_lp, text="GFH")
+                self.header_mgr.set_logo(logo_path=_lp, text="VidaPay")
         except Exception:
             pass
         # Add theme toggle
@@ -1958,7 +1958,7 @@ class VidaPayTransferApp(tk.Tk):
         return proceed["ok"]
 
     # ------------------------------------------------------------------
-    # GFH Branding: logo, icons, themes
+    # VidaPay Branding: logo, icons, themes
     # ------------------------------------------------------------------
 
     def _resolve_theme(self):
@@ -2227,7 +2227,7 @@ class VidaPayTransferApp(tk.Tk):
             self._theme_walk(child)
 
     def _load_brand_assets(self):
-        """Load the real GFH logo + window icon (embedded), else render fallbacks."""
+        """Load the real VidaPay logo + window icon (embedded), else render fallbacks."""
         # Try _MEIPASS first (PyInstaller onefile extraction dir)
         import sys as _sys, os as _os
         _meipass = getattr(_sys, "_MEIPASS", None)
@@ -2253,8 +2253,8 @@ class VidaPayTransferApp(tk.Tk):
             self.after(200, lambda p=_ico_path: self.iconbitmap(default=p))
         except Exception:
             pass
-        # Header logo: embedded real GFH logo first, rendered badge as fallback
-        logo_path = self._extract_embedded(EMBEDDED_LOGO_B64, "gfh_logo_real.png")
+        # Header logo: embedded real VidaPay logo first, rendered badge as fallback
+        logo_path = self._extract_embedded(EMBEDDED_LOGO_B64, "vidapay_logo_real.png")
         if not logo_path:
             logo_path = self._build_logo_image()
         if logo_path:
@@ -2279,7 +2279,7 @@ class VidaPayTransferApp(tk.Tk):
             return None
 
     def _build_logo_image(self, size=46):
-        """Render a red 'GFH' badge logo and save it next to the config."""
+        """Render a red 'VidaPay' badge logo and save it next to the config."""
         try:
             from PIL import Image, ImageDraw, ImageFont
 
@@ -2303,7 +2303,7 @@ class VidaPayTransferApp(tk.Tk):
                     continue
             if font is None:
                 font = ImageFont.load_default()
-            text = "GFH"
+            text = "VidaPay"
             bbox = draw.textbbox((0, 0), text, font=font)
             tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
             draw.text(
@@ -2312,7 +2312,7 @@ class VidaPayTransferApp(tk.Tk):
                 font=font,
                 fill="#ffffff",
             )
-            path = os.path.join(APP_DATA_DIR, "gfh_logo.png")
+            path = os.path.join(APP_DATA_DIR, "vidapay_logo.png")
             img.save(path)
             return path
         except Exception:
