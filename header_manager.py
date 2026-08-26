@@ -46,7 +46,7 @@ class FixedHeaderManager:
         self.header_frame.pack(fill=tk.X)
         self.header_frame.pack_propagate(False)
 
-        # LEFT: Logo
+        # LEFT: Logo + divider (packed together so divider isn't covered by title)
         self.left_frame = tk.Frame(self.header_frame, bg=self.BRAND_NAVY)
         self.left_frame.pack(side=tk.LEFT, padx=(18, 0), pady=9)
 
@@ -59,7 +59,13 @@ class FixedHeaderManager:
             highlightthickness=0,
             borderwidth=0
         )
-        self.logo_label.pack()
+        self.logo_label.pack(side=tk.LEFT)
+
+        # Red vertical divider — inside left_frame so the title's
+        # place(relwidth=1.0) can't cover it
+        self.divider_frame = tk.Frame(self.left_frame, bg=self.BRAND_RED, width=3)
+        self.divider_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(14, 0), pady=3)
+        self.divider_frame._tag = "header"
 
         # RIGHT: pack BEFORE center so toggle anchors right and center truly fills middle
         self.right_frame = tk.Frame(self.header_frame, bg=self.BRAND_NAVY)
@@ -84,11 +90,9 @@ class FixedHeaderManager:
         self.title_label.place(relx=0.0, rely=0.0, relwidth=1.0, relheight=1.0)
         self.title_label.lower()
 
-        # Red vertical divider — placed AFTER title so it's on top in z-order
-        self.divider_frame = tk.Frame(self.header_frame, bg=self.BRAND_RED, width=3)
-        self.divider_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(14, 0), pady=12)
-        self.divider_frame._tag = "header"
-        self.divider_frame.lift()
+        # Raise logo and divider above the title
+        self.left_frame.tkraise()
+        self.right_frame.tkraise()
 
         # Tag all header widgets
         self.header_frame._tag  = "header"
