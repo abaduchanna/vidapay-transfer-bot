@@ -3591,6 +3591,24 @@ class VidaPayTransferApp(tk.Tk):
                 self.log_msg("Failed to log in to CRM. Aborting run.")
                 return
 
+            # 1b. Open WhatsApp Web in a second tab alongside the CRM tab
+            #     so the user can see both VidaPay CRM and WhatsApp Web
+            #     in the same Edge window (side by side or tab switch).
+            self.log_msg("Opening WhatsApp Web in a second tab...")
+            try:
+                if not open_blank_normal_tab(crm_system.driver, log=self.log_msg):
+                    self.log_msg("Could not create a WhatsApp Web tab — continuing with CRM only.")
+                else:
+                    open_url_in_edge_tab(
+                        crm_system.driver, "https://web.whatsapp.com", log=self.log_msg
+                    )
+                    self.log_msg("WhatsApp Web tab opened alongside VidaPay CRM.")
+                    # Switch back to the CRM tab so automation continues there
+                    crm_system.driver.switch_to.window(crm_system.main_window)
+                    time.sleep(1)
+            except Exception as wa_err:
+                self.log_msg(f"WhatsApp Web tab failed (continuing with CRM): {wa_err}")
+
             # 2. WhatsApp: Web tab (default) or Desktop pyautogui
             if wa_mode == "desktop":
                 self.log_msg("WhatsApp mode: Desktop App (pyautogui)")
