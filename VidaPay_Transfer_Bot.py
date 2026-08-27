@@ -1940,22 +1940,40 @@ class VidapayTransferSystem:
 
     def navigate_to_transfer_tool(self):
         self.log("Navigating to Inventory Reassignment Tool...")
-        try:
-            # WhatsApp tab may be the active one right now
-            self._focus_main_window()
-            self.driver.get(
-                "https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
-            )
-            self.wait.until(
-                EC.presence_of_element_located(
-                    (By.ID, "ctl00_MainContent_rcbAccount_Input")
+        for attempt in range(3):
+            try:
+                # Switch to the CRM tab first (not WhatsApp tab)
+                self._focus_main_window()
+                time.sleep(1)
+
+                # Try navigating
+                self.driver.get(
+                    "https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
                 )
-            )
-            time.sleep(2)
-            return True
-        except Exception as e:
-            self.log(f"Failed to navigate to Transfer Tool: {e}")
-            return False
+                self.wait.until(
+                    EC.presence_of_element_located(
+                        (By.ID, "ctl00_MainContent_rcbAccount_Input")
+                    )
+                )
+                time.sleep(2)
+                return True
+            except Exception as e:
+                self.log(f"Navigation attempt {attempt+1}/3 failed: {e}")
+                if attempt < 2:
+                    self.log("Retrying in 5 seconds...")
+                    time.sleep(5)
+                    # Try switching tabs to wake up the driver
+                    try:
+                        handles = self.driver.window_handles
+                        for h in handles:
+                            self.driver.switch_to.window(h)
+                            time.sleep(0.5)
+                        self._focus_main_window()
+                        time.sleep(1)
+                    except Exception:
+                        pass
+        self.log("All navigation attempts failed.")
+        return False
 
     def execute_transfer(self, target_account_id, imeis):
         """Transfer IMEIs to the given VidaPay account.
