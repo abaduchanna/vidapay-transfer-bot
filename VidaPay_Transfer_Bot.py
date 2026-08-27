@@ -2380,6 +2380,19 @@ class WhatsAppScraper:
           'unknown'     - could not determine state
         """
         try:
+            # Quick check: if the page title contains a number in parentheses
+            # like "(18) WhatsApp" or just "WhatsApp" (not "WhatsApp Web"),
+            # the user is logged in. This is the most reliable check because
+            # WhatsApp changes its DOM structure frequently.
+            try:
+                title = self.driver.title or ""
+                # "WhatsApp Web" = pre-login page title
+                # "WhatsApp" or "(N) WhatsApp" = logged in
+                if "whatsapp web" not in title.lower() and "whatsapp" in title.lower():
+                    return "logged_in"
+            except Exception:
+                pass
+
             return self.driver.execute_script("""
                 // 1. Check for QR code (drawn on <canvas> in the login pane)
                 const canvases = document.querySelectorAll('canvas');
@@ -2391,7 +2404,7 @@ class WhatsAppScraper:
                     }
                 }
 
-                // 2. Check for loading spinner (WhatsApp uses a specific SVG spinner)
+                // 2. Check for loading spinner
                 const spinners = document.querySelectorAll(
                     'svg[role="img"], div[role="progressbar"], '
                   + 'div[class*="spinner"], div[class*="loading"]'
@@ -2400,16 +2413,13 @@ class WhatsAppScraper:
                     if (s.offsetWidth > 0 && s.offsetHeight > 0) return 'loading';
                 }
 
-                // 3. Check for the chat list / sidebar (evidence of being logged in)
-                // WhatsApp renders chat items as divs with role="listitem" or
-                // inside a scrollable panel.  Also look for the app header bar.
+                // 3. Check for the chat list / sidebar
                 const chatItems = document.querySelectorAll(
                     '[data-id], [role="listitem"]'
                 );
                 const header = document.querySelector(
                     'header, [class*="header"][class*="app"]'
                 );
-                // Must have at least 1 chat item AND a visible header
                 if (chatItems.length > 0 && header
                     && header.offsetWidth > 0) {
                     return 'logged_in';
@@ -2418,7 +2428,6 @@ class WhatsAppScraper:
                 // 4. Fallback: any contenteditable div means the UI rendered
                 const editables = document.querySelectorAll('[contenteditable="true"]');
                 if (editables.length > 0) {
-                    // No QR, no spinner, has editables => probably logged in
                     return 'logged_in';
                 }
 
