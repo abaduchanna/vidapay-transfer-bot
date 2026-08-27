@@ -2639,7 +2639,7 @@ class WhatsAppScraper:
                     f"[{group_name}] Found {len(messages)} recent incoming messages."
                 )
 
-                for msg in messages:
+                for msg_idx, msg in enumerate(messages):
                     if self.stop_event.is_set():
                         break
 
@@ -2654,11 +2654,6 @@ class WhatsAppScraper:
 
                     # Look for a store name or alias in the message using
                     # smart matching with aliases.
-                    # Rules:
-                    #   1. Check store name + all aliases (word-boundary match)
-                    #   2. "new" prefix is rejected: "colfax" won't match "new colfax"
-                    #   3. "old" prefix is accepted: "old colfax" = "colfax"
-                    #   4. Longest match wins
                     import re as _re
                     target_account = None
                     target_store = None
@@ -2666,7 +2661,6 @@ class WhatsAppScraper:
 
                     for store_name, store_data in mappings.items():
                         sn = store_name.lower()
-                        # Handle both old (string) and new (dict) format
                         if isinstance(store_data, str):
                             acc_id = store_data
                             aliases = []
@@ -2674,22 +2668,16 @@ class WhatsAppScraper:
                             acc_id = store_data.get("account_id", "")
                             aliases = store_data.get("aliases", [])
                         
-                        # Build list of all names to check: store name + aliases
                         all_names = [sn] + [a.lower() for a in aliases]
                         
                         for name in all_names:
                             is_match = False
-                            
-                            # Strategy A: Full name in message
                             if name in text_content:
                                 is_match = True
-                            
-                            # Strategy B: Word-boundary match (rejects "new" prefix)
                             if not is_match:
                                 pattern = r'(?<!\bnew\s)\b' + _re.escape(name) + r'\b'
                                 if _re.search(pattern, text_content):
                                     is_match = True
-                                # Accept "old" prefix as alias
                                 if not is_match and ("old " + name) in text_content:
                                     is_match = True
                             
@@ -2704,26 +2692,69 @@ class WhatsAppScraper:
                             f"for '{target_store}' -> Account: {target_account}"
                         )
                         
-                        # Try extracting IMEIs from the message text FIRST
-                        # (handles messages like "trf to kipling 357612117960162")
+                        # Step 1: Try extracting IMEIs from THIS message's text
                         imeis = self._extract_imeis_from_text(text_content)
                         
                         if imeis:
-                            self.log(
-                                f"Extracted {len(imeis)} IMEIs from message text."
-                            )
+                            self.log(f"Extracted {len(imeis)} IMEIs from trigger message text.")
                         else:
-                            # Fallback: screenshot the message and OCR for IMEIs
-                            # (handles messages with images containing IMEIs)
+                            # Step 2: Try OCR on THIS message (might have an image)
                             img_path = os.path.join(
-                                os.environ.get("TEMP", ""), "wa_msg_temp.png"
+                                os.environ.get("TEMP", ""), f"wa_msg_{msg_idx}.png"
                             )
                             msg.screenshot(img_path)
                             imeis = self._extract_imeis_from_image(img_path)
                             if imeis:
-                                self.log(
-                                    f"Extracted {len(imeis)} IMEIs via OCR from image."
+                                self.log(f"Extracted {len(imeis)} IMEIs via OCR from trigger message image.")
+                        
+                        if not imeis:
+                            # Step 3: Check messages ABOVE (previous messages)
+                            # User often sends IMEIs in a separate message before
+                            # the trigger message
+                            self.log("No IMEIs in trigger message — checking adjacent messages...")
+                            for check_idx in range(msg_idx - 1, max(msg_idx - 4, -1), -1):
+                                if check_idx < 0 or check_idx >= len(messages):
+                                    continue
+                                adj_msg = messages[check_idx]
+                                adj_text = adj_msg.text.lower()
+                                
+                                # Try text first
+                                imeis = self._extract_imeis_from_text(adj_text)
+                                if imeis:
+                                    self.log(f"Extracted {len(imeis)} IMEIs from message above (index {check_idx}).")
+                                    break
+                                
+                                # Try OCR on adjacent message
+                                adj_img = os.path.join(
+                                    os.environ.get("TEMP", ""), f"wa_adj_{check_idx}.png"
                                 )
+                                adj_msg.screenshot(adj_img)
+                                imeis = self._extract_imeis_from_image(adj_img)
+                                if imeis:
+                                    self.log(f"Extracted {len(imeis)} IMEIs via OCR from message above (index {check_idx}).")
+                                    break
+                        
+                        if not imeis:
+                            # Step 4: Check messages BELOW (next messages)
+                            for check_idx in range(msg_idx + 1, min(msg_idx + 4, len(messages))):
+                                adj_msg = messages[check_idx]
+                                adj_text = adj_msg.text.lower()
+                                
+                                # Try text first
+                                imeis = self._extract_imeis_from_text(adj_text)
+                                if imeis:
+                                    self.log(f"Extracted {len(imeis)} IMEIs from message below (index {check_idx}).")
+                                    break
+                                
+                                # Try OCR on adjacent message
+                                adj_img = os.path.join(
+                                    os.environ.get("TEMP", ""), f"wa_adj_{check_idx}.png"
+                                )
+                                adj_msg.screenshot(adj_img)
+                                imeis = self._extract_imeis_from_image(adj_img)
+                                if imeis:
+                                    self.log(f"Extracted {len(imeis)} IMEIs via OCR from message below (index {check_idx}).")
+                                    break
                         
                         if imeis:
                             transfer_tasks.append({
@@ -2734,7 +2765,7 @@ class WhatsAppScraper:
                             })
                         else:
                             self.log(
-                                "No valid IMEIs found in message text or image."
+                                "No valid IMEIs found in trigger message or adjacent messages."
                             )
 
                 search_box.send_keys(Keys.ESCAPE)
@@ -2747,28 +2778,21 @@ class WhatsAppScraper:
 
     def _extract_imeis_from_text(self, text):
         """Extract IMEI numbers from message text.
-        IMEIs are 15-digit numbers starting with 35 or 01.
+        IMEIs are strictly 15-digit numbers starting with 35 or 01.
         Also handles space/dash separated formats like '357 612 117 960 162'."""
         import re as _re
         imeis = set()
         
-        # Clean the text: remove common separators that split IMEIs
-        # but keep digit sequences intact
-        # Pattern 1: Standard 15-digit IMEI (starts with 35 or 01)
-        # Match continuous 15-digit sequences
+        # Pattern 1: Standard 15-digit IMEI (strictly starts with 35 or 01)
         for match in _re.finditer(r'\b((?:35|01)\d{13})\b', text):
             imeis.add(match.group(1))
         
         # Pattern 2: Space/dash separated IMEIs like "357 612 117 960 162"
-        # or "357-612-117-960-162" — strip separators and check if 15 digits
+        # or "357-612-117-960-162" — strip separators and validate
         for match in _re.finditer(r'\b((?:35|01)[\d\s\-]{14,30})', text):
             cleaned = _re.sub(r'[\s\-]', '', match.group(1))
-            if len(cleaned) == 15 and cleaned.isdigit():
+            if len(cleaned) == 15 and cleaned.isdigit() and cleaned[:2] in ('35', '01'):
                 imeis.add(cleaned)
-        
-        # Pattern 3: Any 15-digit number (catches IMEIs that don't start with 35/01)
-        for match in _re.finditer(r'\b(\d{15})\b', text):
-            imeis.add(match.group(1))
         
         return list(imeis)
 
