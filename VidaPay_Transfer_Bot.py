@@ -14,6 +14,9 @@ import sys
 import urllib.request
 import importlib.util
 import threading
+import tempfile
+import requests
+from pathlib import Path
 try:
     import tkinter as tk
 except ImportError:
@@ -149,6 +152,10 @@ AUTOMATION_PROFILE_DIR = r"C:\VidaPay_Edge_Automation_Profile_TransferBot"
 REMOTE_DEBUGGING_PORT = 9224
 ATTACH_TO_OPEN_EDGE = True
 PAGE_LOAD_TIMEOUT = 90
+
+# Human-verification wait: Cloudflare Turnstile / reCAPTCHA auto-solver loop
+# polls every few seconds; 30 s is the upper bound before giving up.
+HUMAN_VERIFY_WAIT_SECONDS = 30
 
 CRM_MAIN_PANEL_URL = "https://www.vidapaycrm.com/Main%20Panel.aspx"
 CRM_LOGIN_URL = "https://www.vidapaycrm.com/Login.aspx"
@@ -317,41 +324,80 @@ def _inject_anti_detection(driver):
         pass
 
 
-def _is_human_verification_page(driver):
-    """Detect Cloudflare / reCAPTCHA / Turnstile pages."""
+def get_current_url_lower(driver):
+    """Return the driver's current URL, lower-cased, never raising."""
     try:
-        body_text = (driver.find_element(By.TAG_NAME, "body").text or "").lower()
-        markers = [
-            "verify you are human", "verify human", "confirm you are human",
-            "checking your browser", "security check", "cloudflare",
-            "cf-turnstile", "turnstile", "i'm not a robot", "not a robot",
-            "recaptcha",
-        ]
-        if any(m in body_text for m in markers):
-            return True
+        return (driver.current_url or "").lower()
+    except Exception:
+        return ""
+
+
+def get_body_text_lower(driver):
+    """Return the page body's text, lower-cased, never raising."""
+    try:
+        return (driver.find_element(By.TAG_NAME, "body").text or "").lower()
+    except Exception:
+        return ""
+
+
+def _is_human_verification_page(driver):
+    """
+    Detect Cloudflare / reCAPTCHA / Turnstile human-verification pages.
+
+    Uses the get_current_url_lower / get_body_text_lower helpers so that any
+    Selenium exceptions (closed tab, lost session, half-loaded DOM) don't blow
+    up the caller.  Mirrors is_human_verification_page() in VidaPay Device
+    Ordering so behaviour stays identical across the two bots.
+    """
+    current_url = get_current_url_lower(driver)
+    body_text = get_body_text_lower(driver)
+
+    text_markers = [
+        "verify you are human",
+        "verify human",
+        "confirm you are human",
+        "checking your browser",
+        "security check",
+        "cloudflare",
+        "cf-turnstile",
+        "turnstile",
+        "review the security of your connection",
+        "i'm not a robot",
+        "not a robot",
+        "recaptcha",
+    ]
+
+    if any(marker in body_text for marker in text_markers):
+        return True
+
+    if "challenge" in current_url and ("cloudflare" in body_text or "verify" in body_text):
+        return True
+
+    try:
         return bool(
             driver.execute_script(
                 """
-                function vis(el) {
+                function visible(el) {
                     if (!el) return false;
-                    const s = window.getComputedStyle(el);
-                    const r = el.getBoundingClientRect();
-                    return s.display!=='none' && s.visibility!=='hidden'
-                           && s.opacity!=='0' && r.width>0 && r.height>0
-                           && el.getClientRects().length>0;
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return (
+                        style.display !== 'none' &&
+                        style.visibility !== 'hidden' &&
+                        style.opacity !== '0' &&
+                        rect.width > 0 &&
+                        rect.height > 0 &&
+                        el.getClientRects().length > 0
+                    );
                 }
-                const bt = (document.body && document.body.innerText || '').toLowerCase();
-                const hv = bt.includes('verify') || bt.includes('human')
-                          || bt.includes('cloudflare') || bt.includes('robot');
-                const cb = Array.from(document.querySelectorAll(
-                    'input[type="checkbox"]')).some(vis);
-                const ts = !!document.querySelector(
-                    '[name="cf-turnstile-response"], .cf-turnstile, '
-                    + 'iframe[src*="turnstile"], iframe[src*="cloudflare"]');
-                const rc = !!document.querySelector(
-                    'iframe[src*="recaptcha"], .g-recaptcha, '
-                    + '#recaptcha-anchor, #rc-anchor-container');
-                return (cb && hv) || ts || rc;
+
+                const bodyText = (document.body && document.body.innerText || '').toLowerCase();
+                const hasVerifyText = bodyText.includes('verify') || bodyText.includes('human') || bodyText.includes('cloudflare') || bodyText.includes('robot');
+                const visibleCheckbox = Array.from(document.querySelectorAll('input[type="checkbox"]')).some(visible);
+                const turnstile = !!document.querySelector('[name="cf-turnstile-response"], .cf-turnstile, iframe[src*="turnstile"], iframe[src*="cloudflare"], iframe[src*="challenge"]');
+                const recaptcha = !!document.querySelector('iframe[src*="recaptcha"], .g-recaptcha, #recaptcha-anchor, #rc-anchor-container');
+
+                return (visibleCheckbox && hasVerifyText) || turnstile || recaptcha;
                 """
             )
         )
@@ -359,14 +405,101 @@ def _is_human_verification_page(driver):
         return False
 
 
-def _wait_for_human_verification_clear(driver, log, timeout=300):
-    """Block until human verification page is gone or timeout."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+def _wait_for_human_verification_clear(driver, stop_event=None,
+                                       timeout=HUMAN_VERIFY_WAIT_SECONDS,
+                                       log=print, context=""):
+    """
+    Block until the human-verification page is gone or timeout.
+
+    Enhanced version (mirrors VidaPay Device Ordering):
+      - Detects Cloudflare Turnstile by CSS selector and waits 15 s for the
+        iframe JS to fully load before clicking.
+      - Calls try_auto_click_human_verification up to 3 times (Turnstile /
+        reCAPTCHA audio solver / plain checkbox dispatcher).
+      - Keeps retrying the auto-click every 5 s until either the page
+        advances or HUMAN_VERIFY_WAIT_SECONDS elapses.
+      - stop_event.is_set() is honoured so the user can cancel mid-solve.
+    """
+    if not _is_human_verification_page(driver):
+        return True
+
+    label = f" during {context}" if context else ""
+
+    # Cloudflare Turnstile needs ~15 s to fully load its iframe JS before a
+    # real mouse click will register.  reCAPTCHA handles its own timing inside
+    # try_solve_recaptcha — no extra wait needed there.
+    is_turnstile = False
+    try:
+        is_turnstile = bool(driver.find_elements(
+            By.CSS_SELECTOR,
+            "iframe[src*='challenges.cloudflare.com'], iframe[src*='turnstile'], "
+            ".cf-turnstile, [class*='turnstile'], #challenge-stage",
+        ))
+    except Exception:
+        pass
+
+    if is_turnstile:
+        log(f"Cloudflare Turnstile detected{label}. Waiting 15 seconds for iframe to fully load...")
+        for _i in range(15):
+            if stop_event is not None and stop_event.is_set():
+                return False
+            time.sleep(1)
+        # If it cleared on its own, continue.
         if not _is_human_verification_page(driver):
+            log("Human verification cleared during wait. Continuing automation.")
+            try:
+                wait_for_body(driver, timeout=15)
+            except Exception:
+                pass
             return True
-        log("Human verification detected. Please complete it in the browser...")
-        time.sleep(3)
+    else:
+        log(f"Human verification detected{label}. Attempting auto-click...")
+
+    # Try auto-clicking the widget up to 3 times with short delays.
+    for attempt in range(3):
+        if stop_event is not None and stop_event.is_set():
+            return False
+        if try_auto_click_human_verification(driver, log=log):
+            time.sleep(2)
+            if not _is_human_verification_page(driver):
+                log("Human verification cleared after auto-click. Continuing automation.")
+                try:
+                    wait_for_body(driver, timeout=15)
+                except Exception:
+                    pass
+                return True
+        time.sleep(2)
+
+    log("Auto-click did not clear human verification. Waiting for page to advance...")
+
+    end_time = time.time() + timeout
+    last_log = 0
+
+    while time.time() < end_time:
+        if stop_event is not None and stop_event.is_set():
+            return False
+
+        # Keep retrying auto-click every 5 seconds.
+        try_auto_click_human_verification(driver, log=log)
+
+        if not _is_human_verification_page(driver):
+            log("Human verification cleared. Continuing automation.")
+            try:
+                wait_for_body(driver, timeout=15)
+            except Exception:
+                pass
+            time.sleep(1)
+            return True
+
+        now = time.time()
+        if now - last_log >= 10:
+            remaining = int(end_time - now)
+            log(f"Still on human verification page. Retrying auto-click. Time left: {remaining} seconds.")
+            last_log = now
+
+        time.sleep(5)
+
+    log("Human verification did not clear in time. Stopping this run.")
     return False
 
 
@@ -707,6 +840,768 @@ def create_logo_label(frame, width=100, height=50):
     return tk.Label(frame, text="VidaPay", font=("Segoe UI", 16, "bold"), fg=BRAND_RED, bg=BRAND_NAVY)
 
 
+# ------------------------------------------------------------------------
+# HUMAN-VERIFICATION AUTO-SOLVER (ported from VidaPay Device Ordering)
+#
+# Cloudflare Turnstile real-OS-mouse clicker (pyautogui) and Google
+# reCAPTCHA v2 audio-challenge solver.  All JavaScript-driven so they
+# are dual-monitor safe.  try_auto_click_human_verification is the
+# dispatcher used by _wait_for_human_verification_clear above.
+# ------------------------------------------------------------------------
+
+def _pyautogui_click_turnstile(driver, log=print):
+    """
+    Click the Cloudflare Turnstile checkbox using a real OS-level mouse click
+    via pyautogui.  This is the only method that works against the sandboxed
+    cross-origin Turnstile iframe — JS events from the parent are blocked.
+
+    Strategy:
+      1. Focus the Edge browser window (so the click lands on the right window).
+      2. Find the Turnstile iframe element.
+      3. Get its viewport-relative rect via getBoundingClientRect().
+      4. Get the browser window's screen position via CDP (LayoutMetrics /
+         Window.getBounds) so we know where the viewport is on screen.
+      5. Compute absolute screen coords of the checkbox (left edge + 24 px,
+         vertically centred) and click with pyautogui.
+    """
+    try:
+        import pyautogui as _pg
+        _pg.FAILSAFE = False
+    except ImportError:
+        log("pyautogui not available — cannot click Turnstile via real mouse.")
+        return False
+
+    # ── Focus the Edge browser window BEFORE clicking ───────────────────────
+    # pyautogui.click() sends a real OS mouse event. If Edge isn't the
+    # foreground window, the click lands on whatever IS in front. This is
+    # why the user had to manually click the window to make it work.
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            import win32gui
+            import win32con
+
+            # Get the Edge window handle from the Selenium driver
+            # Edge's window title contains the page title
+            edge_window_title = ""
+            try:
+                edge_window_title = driver.title or ""
+            except Exception:
+                pass
+
+            # Find the Edge window by title
+            def _find_edge_window(hwnd, result):
+                title = win32gui.GetWindowText(hwnd)
+                if title and ("Edge" in title or edge_window_title in title):
+                    if win32gui.IsWindowVisible(hwnd):
+                        result.append(hwnd)
+                return True
+
+            windows = []
+            win32gui.EnumWindows(_find_edge_window, windows)
+
+            if windows:
+                hwnd = windows[0]
+                # Restore if minimized
+                if win32gui.IsIconic(hwnd):
+                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                # Bring to foreground
+                win32gui.SetForegroundWindow(hwnd)
+                time.sleep(0.5)  # let the window fully focus
+                log("Focused Edge window for Turnstile click.")
+            else:
+                # Fallback: use the driver's window handle directly
+                try:
+                    # Selenium 4: driver.service.process gives the process
+                    # but we need the window. Use driver.current_window_handle
+                    # to get the tab, then find its OS window.
+                    pass
+                except Exception:
+                    pass
+    except Exception as focus_err:
+        log(f"Window focus failed (will try clicking anyway): {focus_err}")
+
+    # Locate the Turnstile iframe
+    _TURNSTILE_IFRAME_SELECTORS = [
+        "iframe[src*='challenges.cloudflare.com']",
+        "iframe[src*='turnstile']",
+        "iframe[title*='Widget']",
+        "iframe[title*='verify']",
+        "iframe[src*='cloudflare']",
+    ]
+    iframe_el = None
+    for sel in _TURNSTILE_IFRAME_SELECTORS:
+        try:
+            iframe_el = driver.find_element(By.CSS_SELECTOR, sel)
+            break
+        except Exception:
+            pass
+
+    if iframe_el is None:
+        # Also try any iframe that has a checkbox inside (switches context)
+        log("No Turnstile iframe selector matched.")
+        return False
+
+    try:
+        # Scroll the iframe into view
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", iframe_el)
+        time.sleep(0.5)
+
+        # Get iframe viewport rect
+        rect = driver.execute_script(
+            "const r = arguments[0].getBoundingClientRect();"
+            "return {left: r.left, top: r.top, width: r.width, height: r.height};",
+            iframe_el,
+        )
+        if not rect or rect["width"] == 0:
+            log("Turnstile iframe has zero size — not yet rendered.")
+            return False
+
+        # Get the browser window's screen position.
+        # CDP LayoutMetrics gives us the visual viewport offset inside the tab,
+        # and window.screenX/Y gives us the window's OS position.
+        win_pos = driver.execute_script(
+            "return {x: window.screenX || window.screenLeft || 0,"
+            "        y: window.screenY || window.screenTop  || 0,"
+            "        dpr: window.devicePixelRatio || 1};"
+        )
+
+        # Edge/Chrome reports coordinates in CSS pixels; pyautogui works in
+        # physical pixels.  On a 100% DPI display dpr=1 so this is a no-op.
+        # On HiDPI (dpr=2) we must NOT scale because pyautogui already works
+        # in logical (CSS) pixels on Windows.  Leave dpr out of the calc.
+
+        # Estimate the browser chrome height (address bar + tabs).
+        # We use the difference between the outer window height and the
+        # inner viewport height.
+        chrome_h = driver.execute_script(
+            "return (window.outerHeight - window.innerHeight) || 100;"
+        )
+
+        # Checkbox sits ~24 px from the left edge, vertically centred in the iframe
+        checkbox_vp_x = rect["left"] + 24
+        checkbox_vp_y = rect["top"]  + rect["height"] / 2
+
+        screen_x = int(win_pos["x"] + checkbox_vp_x)
+        screen_y = int(win_pos["y"] + chrome_h + checkbox_vp_y)
+
+        log(f"Turnstile iframe at viewport ({rect['left']:.0f},{rect['top']:.0f}) "
+            f"size {rect['width']:.0f}×{rect['height']:.0f} | "
+            f"window screen pos ({win_pos['x']},{win_pos['y']}) chrome_h={chrome_h} | "
+            f"clicking screen ({screen_x},{screen_y})")
+
+        _pg.moveTo(screen_x, screen_y, duration=0.3)
+        time.sleep(0.1)
+        _pg.click(screen_x, screen_y)
+        log("pyautogui clicked Turnstile checkbox (real OS mouse click).")
+        return True
+
+    except Exception as exc:
+        log(f"pyautogui Turnstile click error: {exc}")
+        return False
+
+def try_auto_click_human_verification(driver, log=print):
+    """
+    Click the visible human-verification widget.
+
+    A. Google reCAPTCHA → audio solver (try_solve_recaptcha).
+    B. Cloudflare Turnstile → real OS mouse click via pyautogui (only method
+       that works against the sandboxed cross-origin Turnstile iframe).
+    C. Plain visible <input type="checkbox"> in the main document → JS click.
+    """
+
+    # ------------------------------------------------------------------ #
+    # A. Detect reCAPTCHA → audio solver                                  #
+    # ------------------------------------------------------------------ #
+    _RECAPTCHA_ANCHOR_SELECTORS = [
+        "iframe[src*='recaptcha/api2/anchor']",
+        "iframe[src*='recaptcha/enterprise/anchor']",
+        "iframe[title*='reCAPTCHA']",
+        "iframe[title*='not a robot']",
+    ]
+    for sel in _RECAPTCHA_ANCHOR_SELECTORS:
+        try:
+            if driver.find_element(By.CSS_SELECTOR, sel):
+                log("reCAPTCHA anchor iframe detected — running audio solver directly.")
+                return try_solve_recaptcha(driver, log=log)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ #
+    # B. Cloudflare Turnstile → pyautogui real mouse click               #
+    # ------------------------------------------------------------------ #
+    _TURNSTILE_PRESENT_SELECTORS = [
+        "iframe[src*='challenges.cloudflare.com']",
+        "iframe[src*='turnstile']",
+        "iframe[title*='Widget']",
+        ".cf-turnstile",
+        "[class*='turnstile']",
+        "#challenge-stage",
+    ]
+    for sel in _TURNSTILE_PRESENT_SELECTORS:
+        try:
+            if driver.find_element(By.CSS_SELECTOR, sel):
+                log(f"Cloudflare Turnstile detected ({sel}) — using real mouse click.")
+                return _pyautogui_click_turnstile(driver, log=log)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ #
+    # C. Plain visible checkbox in main document                          #
+    # ------------------------------------------------------------------ #
+    try:
+        clicked = driver.execute_script(
+            """
+            function visible(el) {
+                if (!el) return false;
+                const s = window.getComputedStyle(el);
+                const r = el.getBoundingClientRect();
+                return s.display !== 'none' && s.visibility !== 'hidden' &&
+                       s.opacity !== '0' && r.width > 0 && r.height > 0;
+            }
+            const box = Array.from(document.querySelectorAll('input[type="checkbox"]'))
+                            .find(el => visible(el) && !el.checked);
+            if (!box) return false;
+            box.scrollIntoView({block:'center'});
+            box.focus();
+            box.checked = true;
+            box.dispatchEvent(new Event('change', {bubbles:true}));
+            box.dispatchEvent(new Event('input',  {bubbles:true}));
+            box.click();
+            return true;
+            """
+        )
+        if clicked:
+            log("JS-clicked plain checkbox in main document.")
+            return True
+    except Exception:
+        pass
+
+    return False
+
+# ---------------------------------------------------------------------------
+# reCAPTCHA v2 audio solver helpers
+# ---------------------------------------------------------------------------
+
+def _download_recaptcha_audio(driver, url, tmp_dir, log=print):
+    """Download the reCAPTCHA audio MP3 using browser cookies."""
+    try:
+        import requests as _req
+        cookies = {c["name"]: c["value"] for c in driver.get_cookies()}
+        headers = {
+            "User-Agent": driver.execute_script("return navigator.userAgent;"),
+            "Referer": driver.current_url,
+        }
+        resp = _req.get(url, cookies=cookies, headers=headers, timeout=25)
+        resp.raise_for_status()
+        mp3_path = os.path.join(tmp_dir, "rc_audio.mp3")
+        with open(mp3_path, "wb") as fh:
+            fh.write(resp.content)
+        log(f"Downloaded reCAPTCHA audio ({len(resp.content):,} bytes).")
+        return mp3_path
+    except Exception as exc:
+        log(f"Audio download failed: {exc}")
+        return None
+
+def _get_ffmpeg_exe(log=print):
+    """
+    Return a working ffmpeg executable path.
+    Tries in order:
+      1. 'ffmpeg' on PATH
+      2. Common Windows install locations
+      3. imageio-ffmpeg bundled binary (auto-installs the package if needed)
+    """
+    # 1. PATH + common locations
+    candidates = ["ffmpeg", "ffmpeg.exe"]
+    common = [
+        r"C:\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
+        str(Path.home() / "ffmpeg" / "bin" / "ffmpeg.exe"),
+    ]
+    for exe in candidates + common:
+        try:
+            r = subprocess.run([exe, "-version"], capture_output=True, timeout=5)
+            if r.returncode == 0:
+                return exe
+        except Exception:
+            pass
+
+    # 2. imageio-ffmpeg — downloads a real static ffmpeg binary via pip
+    try:
+        try:
+            import imageio_ffmpeg as _iio
+        except ImportError:
+            log("Installing imageio-ffmpeg (downloads real ffmpeg binary)...")
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "imageio-ffmpeg",
+                 "--quiet", "--disable-pip-version-check"],
+                capture_output=True, timeout=120,
+            )
+            import imageio_ffmpeg as _iio
+        exe = _iio.get_ffmpeg_exe()
+        r = subprocess.run([exe, "-version"], capture_output=True, timeout=5)
+        if r.returncode == 0:
+            log(f"Using ffmpeg via imageio-ffmpeg: {exe}")
+            return exe
+    except Exception as exc:
+        log(f"imageio-ffmpeg failed: {exc}")
+
+    return None
+
+def _mp3_to_wav(mp3_path, wav_path, log=print):
+    """Convert MP3 to 16kHz mono WAV using the best available ffmpeg. Returns True on success."""
+    exe = _get_ffmpeg_exe(log=log)
+    if not exe:
+        log("No ffmpeg executable found — cannot convert MP3 to WAV.")
+        return False
+    try:
+        result = subprocess.run(
+            [exe, "-y", "-i", mp3_path, "-ar", "16000", "-ac", "1", "-f", "wav", wav_path],
+            capture_output=True, timeout=30,
+        )
+        if result.returncode == 0 and os.path.exists(wav_path):
+            log("Converted MP3→WAV (16kHz mono).")
+            return True
+        log(f"ffmpeg returned {result.returncode}: {result.stderr[-200:]}")
+    except Exception as exc:
+        log(f"MP3→WAV conversion error: {exc}")
+    return False
+
+def _transcribe_wav_google(wav_path, log=print):
+    """Transcribe a WAV file using Google Speech Recognition via SpeechRecognition."""
+    try:
+        import speech_recognition as _sr
+    except ImportError:
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "SpeechRecognition",
+                 "--quiet", "--disable-pip-version-check"],
+                capture_output=True, timeout=60,
+            )
+            import speech_recognition as _sr
+        except Exception as exc:
+            log(f"Cannot install SpeechRecognition: {exc}")
+            return None
+    try:
+        rec = _sr.Recognizer()
+        with _sr.AudioFile(wav_path) as src:
+            audio = rec.record(src)
+        text = rec.recognize_google(audio).lower().strip()
+        log(f"Transcribed: '{text}'")
+        return text
+    except Exception as exc:
+        log(f"Google STT failed: {exc}")
+        return None
+
+def _transcribe_wav_whisper(wav_path, log=print):
+    """
+    Transcribe a WAV using OpenAI Whisper (local, no API key).
+    Auto-installs 'openai-whisper' on first use (~40MB, one-time download).
+    """
+    try:
+        try:
+            import whisper as _whisper
+        except ImportError:
+            log("Installing openai-whisper (one-time, ~40 MB)...")
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "openai-whisper",
+                 "--quiet", "--disable-pip-version-check"],
+                capture_output=True, timeout=180,
+            )
+            import whisper as _whisper
+        model = _whisper.load_model("tiny")   # smallest/fastest model
+        result = model.transcribe(wav_path, language="en", fp16=False)
+        text = result.get("text", "").lower().strip()
+        if text:
+            log(f"Whisper transcribed: '{text}'")
+            return text
+    except Exception as exc:
+        log(f"Whisper transcription failed: {exc}")
+    return None
+
+def _transcribe_audio_mp3(mp3_path, log=print):
+    """
+    Transcribe a reCAPTCHA MP3 audio challenge.
+
+    Flow:
+      1. Convert MP3 → WAV using real ffmpeg (via imageio-ffmpeg auto-install).
+      2. Transcribe WAV with Google Speech Recognition (SpeechRecognition library).
+      3. If Google STT fails, transcribe with OpenAI Whisper (local, no API key).
+    """
+    wav_path = mp3_path.replace(".mp3", ".wav")
+    text = None
+
+    try:
+        if _mp3_to_wav(mp3_path, wav_path, log=log):
+            # Try Google STT first (fast, online)
+            text = _transcribe_wav_google(wav_path, log=log)
+
+            # Whisper fallback (local, offline)
+            if not text:
+                text = _transcribe_wav_whisper(wav_path, log=log)
+        else:
+            # No ffmpeg at all — try Whisper directly on the MP3
+            log("No ffmpeg — trying Whisper directly on MP3...")
+            text = _transcribe_wav_whisper(mp3_path, log=log)
+    finally:
+        for p in (mp3_path, wav_path):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+
+    if not text:
+        log("All transcription methods failed.")
+    return text
+
+def _js_click(driver, selector_or_id, by_id=False, log=print):
+    """
+    Click an element purely through JavaScript — no ActionChains, no physical
+    mouse coordinates.  Safe on dual-monitor setups where ActionChains coords
+    are offset by the secondary display position.
+
+    Uses the full synthetic event chain that Google's reCAPTCHA widget listens to:
+      pointerover → mouseover → pointermove → mousemove →
+      pointerdown  → mousedown → pointerup → mouseup → click
+    """
+    js = """
+    const sel = arguments[0];
+    const byId = arguments[1];
+    const el = byId ? document.getElementById(sel)
+                    : document.querySelector(sel);
+    if (!el) return 'NOT_FOUND';
+    el.scrollIntoView({block: 'center', inline: 'center'});
+    const rect  = el.getBoundingClientRect();
+    const cx    = rect.left + rect.width  / 2;
+    const cy    = rect.top  + rect.height / 2;
+    const opts  = {bubbles: true, cancelable: true, view: window,
+                   clientX: cx, clientY: cy};
+    ['pointerover','mouseover','pointermove','mousemove',
+     'pointerdown','mousedown','pointerup','mouseup','click'
+    ].forEach(t => el.dispatchEvent(new MouseEvent(t, opts)));
+    return 'CLICKED';
+    """
+    try:
+        result = driver.execute_script(js, selector_or_id, by_id)
+        if result == "CLICKED":
+            return True
+        log(f"_js_click: element not found — {'#' if by_id else ''}{selector_or_id}")
+        return False
+    except Exception as exc:
+        log(f"_js_click error ({'#' if by_id else ''}{selector_or_id}): {exc}")
+        return False
+
+def _js_get_attr(driver, css_selector, attr):
+    """Return the value of an attribute on the first matching element, or None."""
+    try:
+        return driver.execute_script(
+            "const el = document.querySelector(arguments[0]);"
+            "return el ? el.getAttribute(arguments[1]) || el[arguments[1]] : null;",
+            css_selector, attr,
+        )
+    except Exception:
+        return None
+
+def _js_set_value(driver, element_id, text):
+    """Set an input field value and fire input/change events — cross-origin safe."""
+    try:
+        driver.execute_script(
+            """
+            const f = document.getElementById(arguments[0]);
+            if (!f) return false;
+            f.focus();
+            // Simulate real keystrokes so React/Angular state picks up the value
+            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                window.HTMLInputElement.prototype, 'value').set;
+            nativeInputValueSetter.call(f, arguments[1]);
+            f.dispatchEvent(new Event('input',  {bubbles: true}));
+            f.dispatchEvent(new Event('change', {bubbles: true}));
+            f.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true}));
+            return true;
+            """,
+            element_id, text,
+        )
+        return True
+    except Exception:
+        return False
+
+def try_solve_recaptcha(driver, log=print):
+    """
+    Google reCAPTCHA v2 audio-challenge solver — dual-monitor safe.
+
+    Uses ONLY JavaScript events (no ActionChains / physical mouse moves) so
+    screen coordinates on secondary monitors never cause misclicks.
+
+    Flow:
+      1. Wait 10 s for the widget to fully render.
+      2. Switch into anchor iframe → JS-click .recaptcha-checkbox-border.
+      3. Switch back, wait 3 s for the challenge bframe popup.
+      4. Switch into bframe → if an image grid appears, JS-click the
+         headphone/audio button (#recaptcha-audio-button) to switch to audio.
+      5. Wait for audio panel, read .rc-audiochallenge-tdownload-link href.
+      6. Download + transcribe the MP3.
+      7. Switch back into bframe → JS-set #audio-response → JS-click
+         #recaptcha-verify-button.
+      8. Switch to main doc → JS-click #btnClick (orange login button).
+    """
+    import tempfile
+
+    _ANCHOR_CSS = [
+        "iframe[src*='recaptcha/api2/anchor']",
+        "iframe[src*='recaptcha/enterprise/anchor']",
+        "iframe[title*='reCAPTCHA']",
+        "iframe[title*='not a robot']",
+    ]
+    _BFRAME_CSS = [
+        "iframe[src*='recaptcha/api2/bframe']",
+        "iframe[src*='recaptcha/enterprise/bframe']",
+        "iframe[title*='recaptcha challenge']",
+        "iframe[title*='challenge expires']",
+    ]
+
+    # ---- Step 1: locate anchor iframe ----
+    anchor_iframe = None
+    for sel in _ANCHOR_CSS:
+        try:
+            anchor_iframe = driver.find_element(By.CSS_SELECTOR, sel)
+            break
+        except Exception:
+            pass
+
+    if anchor_iframe is None:
+        return False  # no reCAPTCHA on this page
+
+    log("reCAPTCHA v2 detected — starting audio solver...")
+    time.sleep(2)
+
+    try:
+        # ---- Step 2: JS-click .recaptcha-checkbox-border inside anchor iframe ----
+        driver.switch_to.frame(anchor_iframe)
+        log("Switched into reCAPTCHA anchor iframe.")
+
+        # Wait for checkbox to appear
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".recaptcha-checkbox-border"))
+        )
+
+        clicked_checkbox = _js_click(driver, ".recaptcha-checkbox-border", by_id=False, log=log)
+        if not clicked_checkbox:
+            # fallback to the wrapper span
+            clicked_checkbox = _js_click(driver, "#recaptcha-anchor", by_id=True, log=log)
+
+        if clicked_checkbox:
+            log("Clicked reCAPTCHA checkbox (JS — dual-monitor safe).")
+        else:
+            log("Could not click reCAPTCHA checkbox.")
+            driver.switch_to.default_content()
+            return False
+
+        driver.switch_to.default_content()
+        log("Waiting 3 s for challenge popup to appear...")
+        time.sleep(3)
+
+        # ---- Step 3: locate bframe ----
+        bframe = None
+        for sel in _BFRAME_CSS:
+            try:
+                bframe = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, sel))
+                )
+                break
+            except Exception:
+                pass
+
+        if bframe is None:
+            log("No challenge popup — reCAPTCHA passed via checkbox alone.")
+            _click_login_verify_button(driver, log=log)
+            return True
+
+        # ---- Step 4: switch into bframe, click audio button ----
+        driver.switch_to.frame(bframe)
+        log("Switched into reCAPTCHA challenge bframe.")
+        time.sleep(1)
+
+        # The bframe may show an image grid challenge first.
+        # Click #recaptcha-audio-button (the headphone icon) to switch to audio.
+        # Retry up to 5 times — the button may not exist until the grid is shown.
+        audio_switched = False
+        for attempt in range(5):
+            # Check if audio button exists
+            has_audio_btn = driver.execute_script(
+                "return !!document.getElementById('recaptcha-audio-button');"
+            )
+            if has_audio_btn:
+                ok = _js_click(driver, "recaptcha-audio-button", by_id=True, log=log)
+                if ok:
+                    log(f"Clicked #recaptcha-audio-button (attempt {attempt+1}) — switching to audio challenge.")
+                    audio_switched = True
+                    break
+            # Also try the CSS class selector
+            ok = _js_click(driver, ".rc-button-audio", by_id=False, log=log)
+            if ok:
+                log(f"Clicked .rc-button-audio (attempt {attempt+1}) — switching to audio challenge.")
+                audio_switched = True
+                break
+            log(f"Audio button not yet visible (attempt {attempt+1}/5), waiting 2 s...")
+            time.sleep(2)
+
+        if not audio_switched:
+            log("Could not click audio challenge button — manual solving required.")
+            driver.switch_to.default_content()
+            return False
+
+        # Wait for the audio challenge panel to render
+        log("Waiting 4 s for audio challenge panel to load...")
+        time.sleep(4)
+
+        # ---- Step 5: read .rc-audiochallenge-tdownload-link href ----
+        audio_url = None
+        for _attempt in range(15):
+            # Try JS first (more reliable inside cross-origin frames)
+            url = driver.execute_script(
+                """
+                const a = document.querySelector(
+                    '.rc-audiochallenge-tdownload-link, a[href*="audio.mp3"], a[download]'
+                );
+                return a ? (a.href || a.getAttribute('href')) : null;
+                """
+            )
+            if url:
+                audio_url = url
+                break
+            time.sleep(1)
+
+        # Switch back to main doc before downloading
+        driver.switch_to.default_content()
+
+        if not audio_url:
+            log("Could not find audio download link — manual solving required.")
+            return False
+
+        log(f"Audio URL: {audio_url[:100]}...")
+
+        # ---- Step 6: download + transcribe ----
+        tmp_dir = tempfile.mkdtemp(prefix="vp_rc_")
+        mp3_path = _download_recaptcha_audio(driver, audio_url, tmp_dir, log=log)
+        if not mp3_path:
+            log("Audio download failed.")
+            return False
+
+        answer = _transcribe_audio_mp3(mp3_path, log=log)
+        if not answer:
+            log("Audio transcription failed.")
+            return False
+
+        log(f"Transcribed answer: '{answer}'")
+
+        # ---- Step 7: switch back into bframe, fill answer, verify ----
+        bframe = None
+        for sel in _BFRAME_CSS:
+            try:
+                bframe = driver.find_element(By.CSS_SELECTOR, sel)
+                break
+            except Exception:
+                pass
+
+        if bframe is None:
+            log("bframe disappeared after download — manual solving required.")
+            return False
+
+        driver.switch_to.frame(bframe)
+        log("Switched back into bframe to submit answer.")
+
+        # Wait for #audio-response to exist
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "audio-response"))
+        )
+
+        # Set the field value via JS (cross-origin + dual-monitor safe)
+        set_ok = _js_set_value(driver, "audio-response", answer)
+        if set_ok:
+            log(f"Set #audio-response value: '{answer}'")
+        else:
+            log("Could not set #audio-response value — manual solving required.")
+            driver.switch_to.default_content()
+            return False
+
+        time.sleep(0.5)
+
+        # Click #recaptcha-verify-button via JS
+        verify_ok = _js_click(driver, "recaptcha-verify-button", by_id=True, log=log)
+        if verify_ok:
+            log("Clicked #recaptcha-verify-button via JS.")
+        else:
+            log("Could not click #recaptcha-verify-button — manual solving required.")
+            driver.switch_to.default_content()
+            return False
+
+        log("Waiting 4 s for reCAPTCHA to validate answer...")
+        time.sleep(4)
+
+        driver.switch_to.default_content()
+
+        # ---- Step 8: click orange #btnClick login button ----
+        _click_login_verify_button(driver, log=log)
+        return True
+
+    except Exception as exc:
+        log(f"reCAPTCHA solver error: {exc}")
+        try:
+            driver.switch_to.default_content()
+        except Exception:
+            pass
+        return False
+
+def _click_login_verify_button(driver, log=print):
+    """
+    Click the orange Verify / login submit button (#btnClick) on the VidaPay
+    login page after reCAPTCHA is solved.
+
+    Pure JS — no ActionChains.  Dual-monitor safe.
+    Force-removes the disabled attribute first because VidaPay keeps it disabled
+    until the reCAPTCHA token propagates (can take 1-3 s).
+    """
+    _SELECTORS = [
+        "#btnClick",
+        "button[data-test-id='verify']",
+        "button[data-callback='formSubmit']",
+        "button.btn-orange[value='login']",
+    ]
+
+    end_time = time.time() + 15
+    while time.time() < end_time:
+        for sel in _SELECTORS:
+            try:
+                result = driver.execute_script(
+                    """
+                    const el = document.querySelector(arguments[0]);
+                    if (!el) return 'NOT_FOUND';
+                    el.removeAttribute('disabled');
+                    el.classList.remove('disabled');
+                    el.scrollIntoView({block: 'center', inline: 'center'});
+                    const rect = el.getBoundingClientRect();
+                    const cx = rect.left + rect.width  / 2;
+                    const cy = rect.top  + rect.height / 2;
+                    const opts = {bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy};
+                    ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(
+                        t => el.dispatchEvent(new MouseEvent(t, opts))
+                    );
+                    return 'CLICKED';
+                    """,
+                    sel,
+                )
+                if result == "CLICKED":
+                    log(f"Clicked login Verify button ({sel}) via JS.")
+                    return True
+            except Exception:
+                continue
+        time.sleep(0.5)
+
+    log("Could not click login Verify button within 15 seconds.")
+    return False
+
+
 class VidapayTransferSystem:
     """Standalone CRM logic for Inventory Reassignment with proper login flow."""
 
@@ -933,8 +1828,13 @@ class VidapayTransferSystem:
 
             # Human verification (Cloudflare / Turnstile / reCAPTCHA)
             if _is_human_verification_page(self.driver):
-                self.log("Human verification detected during sign-in. Waiting...")
-                _wait_for_human_verification_clear(self.driver, self.log)
+                self.log("Human verification detected during sign-in. Auto-solving...")
+                _wait_for_human_verification_clear(
+                    self.driver,
+                    stop_event=self.stop_event,
+                    log=self.log,
+                    context="sign-in flow",
+                )
                 continue
 
             h3_texts = self._get_visible_h3_texts()
