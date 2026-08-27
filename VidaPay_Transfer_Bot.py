@@ -789,6 +789,13 @@ def create_edge_driver(log=print, attach=None):
             "debuggerAddress",
             f"127.0.0.1:{REMOTE_DEBUGGING_PORT}"
         )
+        # Auto-dismiss any lingering JS confirm()/alert() dialogs (e.g. the
+        # "Delete this SIM entry?" prompt that gets left behind after a
+        # previous transfer attempt).  Without this, msedgedriver on Windows
+        # crashes with a GetHandleVerifier stacktrace the moment driver.get()
+        # is called while an alert is open.
+        options.set_capability("unhandledPromptBehavior", "dismiss")
+        options.set_capability("acceptInsecureCerts", True)
 
         driver = EdgeDriver(options=options)
         driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
@@ -814,6 +821,10 @@ def create_edge_driver(log=print, attach=None):
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
     options.add_argument("--disable-blink-features=AutomationControlled")
+    # Auto-dismiss any lingering JS confirm()/alert() dialogs so that
+    # navigation does not crash msedgedriver (see attach path for details).
+    options.set_capability("unhandledPromptBehavior", "dismiss")
+    options.set_capability("acceptInsecureCerts", True)
 
     driver = EdgeDriver(options=options)
     driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
@@ -1938,9 +1949,44 @@ class VidapayTransferSystem:
         except Exception:
             pass
 
+    def _dismiss_pending_alerts(self):
+        """Dismiss any lingering JS alert()/confirm()/prompt() dialogs.
+
+        VidaPay's InventoryReassignmentTool.aspx pops a ``confirm("Delete this
+        SIM entry?")`` dialog whenever the user (or the bot) clicks the "X"
+        button next to a SIM row.  If that dialog is left open — e.g. a
+        previous run was killed mid-click, or the auto-dismiss capability
+        did not catch it — every subsequent ``driver.get()`` will hang and
+        msedgedriver on Windows will crash with a ``GetHandleVerifier``
+        stacktrace.
+
+        This helper runs before each navigation step so we never enter
+        ``driver.get()`` with an alert on top of the page.
+        """
+        for _ in range(3):  # alerts can stack — dismiss up to 3 in a row
+            try:
+                WebDriverWait(self.driver, 0.5).until(EC.alert_is_present())
+            except Exception:
+                return  # no alert present — done
+            try:
+                alert = self.driver.switch_to.alert
+                alert_text = ""
+                try:
+                    alert_text = alert.text
+                except Exception:
+                    pass
+                alert.dismiss()
+                self.log(
+                    f"Dismissed lingering browser alert"
+                    + (f": {alert_text[:80]}" if alert_text else "")
+                )
+                time.sleep(0.5)
+            except Exception:
+                return
+
     def navigate_to_transfer_tool(self):
         self.log("Navigating to Inventory Reassignment Tool...")
-        
+
         # Don't close tabs — driver.close() kills the msedgedriver session.
         # Just switch to the CRM tab.
         self._focus_main_window()
@@ -1948,11 +1994,24 @@ class VidapayTransferSystem:
 
         for attempt in range(3):
             try:
+                # Clear any lingering "Delete this SIM entry?" confirm()
+                # dialog before navigating — otherwise msedgedriver crashes
+                # with a GetHandleVerifier stacktrace on Windows.
+                self._dismiss_pending_alerts()
+
                 self.driver.get(
                     "https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
                 )
                 time.sleep(3)
-                
+
+                # A confirm() dialog can also pop up *during* the GET (the
+                # previous page fires an onbeforeunload confirm).  Dismiss
+                # it and re-issue the GET.
+                try:
+                    self._dismiss_pending_alerts()
+                except Exception:
+                    pass
+
                 # Check if VidaPay showed an Application Error page
                 try:
                     error_el = self.driver.find_element(By.CSS_SELECTOR, ".error-container, .error-title")
@@ -1970,21 +2029,25 @@ class VidapayTransferSystem:
                                 self.driver.get("https://www.vidapaycrm.com/Main%20Panel.aspx")
                                 self.log("Navigated to Main Panel via URL.")
                             time.sleep(3)
+                            self._dismiss_pending_alerts()
                             # Now try navigating to the Transfer Tool again
                             self.driver.get(
                                 "https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
                             )
                             time.sleep(3)
+                            self._dismiss_pending_alerts()
                         except Exception:
                             self.driver.get("https://www.vidapaycrm.com/Main%20Panel.aspx")
                             time.sleep(3)
+                            self._dismiss_pending_alerts()
                             self.driver.get(
                                 "https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
                             )
                             time.sleep(3)
+                            self._dismiss_pending_alerts()
                 except Exception:
                     pass  # No error page — continue normally
-                
+
                 self.wait.until(
                     EC.presence_of_element_located(
                         (By.ID, "ctl00_MainContent_rcbAccount_Input")
@@ -1993,8 +2056,14 @@ class VidapayTransferSystem:
                 time.sleep(2)
                 return True
             except Exception as e:
-                err_str = str(e)[:100]
+                err_str = str(e)[:200]
                 self.log(f"Navigation attempt {attempt+1}/3 failed: {err_str}")
+                # If the failure was caused by an alert, dismiss it before
+                # retrying — otherwise the next attempt will crash the same way.
+                try:
+                    self._dismiss_pending_alerts()
+                except Exception:
+                    pass
                 if attempt < 2:
                     self.log("Retrying in 10 seconds...")
                     time.sleep(10)
@@ -2005,6 +2074,10 @@ class VidapayTransferSystem:
                         self.main_window = self.driver.current_window_handle
                         self.log("Re-attached to Edge browser.")
                         time.sleep(2)
+                        # Dismiss any alert that may have survived the
+                        # re-attach (rare, but possible if the page is
+                        # still mid-dialog).
+                        self._dismiss_pending_alerts()
                     except Exception as re_err:
                         self.log(f"Re-attach failed: {re_err}")
         self.log("All navigation attempts failed.")
@@ -2380,10 +2453,14 @@ class VidapayTransferSystem:
                     "arguments[0].click();", x_buttons[-1]
                 )
                 time.sleep(1)
-                # Handle the JavaScript confirm() dialog if the page pops one.
+                # Handle the JavaScript confirm() dialog ("Delete this SIM
+                # entry?") that the page pops up after clicking X.  Use the
+                # robust helper — a bare switch_to.alert.accept() will silently
+                # no-op if the alert takes >0 ms to appear, leaving the dialog
+                # open and crashing the next driver.get() with a
+                # GetHandleVerifier stacktrace.
                 try:
-                    alert = self.driver.switch_to.alert
-                    alert.accept()
+                    self._dismiss_pending_alerts()
                 except Exception:
                     pass
                 self.log(
