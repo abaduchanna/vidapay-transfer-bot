@@ -1951,6 +1951,40 @@ class VidapayTransferSystem:
                 self.driver.get(
                     "https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
                 )
+                time.sleep(3)
+                
+                # Check if VidaPay showed an Application Error page
+                try:
+                    error_el = self.driver.find_element(By.CSS_SELECTOR, ".error-container, .error-title")
+                    if error_el and error_el.is_displayed():
+                        self.log("⚠️ VidaPay Application Error detected. Navigating to Main Panel...")
+                        # Click Main Panel link
+                        try:
+                            main_panel = self.driver.find_element(
+                                By.CSS_SELECTOR, "span.rmText"
+                            )
+                            if "main panel" in (main_panel.text or "").lower():
+                                self.driver.execute_script("arguments[0].click();", main_panel)
+                                self.log("Clicked Main Panel link.")
+                            else:
+                                self.driver.get("https://www.vidapaycrm.com/Main%20Panel.aspx")
+                                self.log("Navigated to Main Panel via URL.")
+                            time.sleep(3)
+                            # Now try navigating to the Transfer Tool again
+                            self.driver.get(
+                                "https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
+                            )
+                            time.sleep(3)
+                        except Exception:
+                            self.driver.get("https://www.vidapaycrm.com/Main%20Panel.aspx")
+                            time.sleep(3)
+                            self.driver.get(
+                                "https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
+                            )
+                            time.sleep(3)
+                except Exception:
+                    pass  # No error page — continue normally
+                
                 self.wait.until(
                     EC.presence_of_element_located(
                         (By.ID, "ctl00_MainContent_rcbAccount_Input")
