@@ -2462,10 +2462,25 @@ class WhatsAppScraper:
             return 'unknown'
 
     def _wa_find_search_box_js(self):
-        """Use JavaScript to locate the search input.  Much more resilient
-        than hardcoded XPath because it inspects the live DOM structure."""
+        """Use JavaScript to locate the search input."""
         return self.driver.execute_script("""
-            // Strategy 1: contenteditable inside a header or search panel
+            // Strategy 1: Standard input elements (WhatsApp's newer UI)
+            const inputs = document.querySelectorAll(
+                'input[type="text"], input:not([type]), '
+              + 'input[placeholder*="search" i], input[placeholder*="chat" i], '
+              + 'input[aria-label*="search" i], input[aria-label*="chat" i]'
+            );
+            for (const el of inputs) {
+                if (el.offsetWidth > 0 && el.offsetHeight > 0
+                    && getComputedStyle(el).display !== 'none'
+                    && getComputedStyle(el).visibility !== 'hidden') {
+                    // Prefer search inputs in the header area (top of page)
+                    const rect = el.getBoundingClientRect();
+                    if (rect.top < 300) return el;
+                }
+            }
+
+            // Strategy 2: contenteditable divs (WhatsApp's older UI)
             const candidates = document.querySelectorAll(
                 'header [contenteditable="true"], '
               + '[class*="search"] [contenteditable="true"], '
@@ -2481,15 +2496,26 @@ class WhatsAppScraper:
                 }
             }
 
-            // Strategy 2: ANY visible contenteditable div (broadest fallback)
+            // Strategy 3: p element with role="textbox" (newer WhatsApp)
+            const textboxes = document.querySelectorAll(
+                'p[role="textbox"], div[role="textbox"], '
+              + '[data-testid="search-input"], '
+              + 'span[role="textbox"]'
+            );
+            for (const el of textboxes) {
+                if (el.offsetWidth > 0 && el.offsetHeight > 0) {
+                    const rect = el.getBoundingClientRect();
+                    if (rect.top < 300) return el;
+                }
+            }
+
+            // Strategy 4: ANY visible contenteditable div near top of page
             const all = document.querySelectorAll('[contenteditable="true"]');
             for (const el of all) {
                 if (el.offsetWidth > 0 && el.offsetHeight > 0
                     && getComputedStyle(el).display !== 'none'
                     && getComputedStyle(el).visibility !== 'hidden'
                     && el.tagName === 'DIV') {
-                    // Prefer the one that is closest to the top of the page
-                    // (the search box is in the header, not the message composer)
                     const rect = el.getBoundingClientRect();
                     if (rect.top < 200) return el;
                 }
@@ -2609,9 +2635,31 @@ class WhatsAppScraper:
         return False
 
     def _find_search_box(self):
-        """Locate the search box (used by find_and_read_groups).
-        Reuses the JS-based finder from start_whatsapp."""
-        return self._wa_find_search_box_js()
+        """Locate the search box. Tries JS first, then keyboard shortcut."""
+        # Try JS-based search first
+        box = self._wa_find_search_box_js()
+        if box:
+            return box
+
+        # Fallback: use Ctrl+/ keyboard shortcut to focus the search bar
+        # (WhatsApp Web's built-in shortcut)
+        try:
+            from selenium.webdriver.common.action_chains import ActionChains
+            self.driver.switch_to.active_element
+            ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('/').key_up(Keys.CONTROL).perform()
+            time.sleep(1)
+            # Now try to find the focused element
+            box = self._wa_find_search_box_js()
+            if box:
+                return box
+            # Last resort: return the active element
+            active = self.driver.switch_to.active_element
+            if active and active.tag_name in ('input', 'div', 'p'):
+                return active
+        except Exception:
+            pass
+
+        return None
 
     def _focus_wa_window(self):
         """Bring the WhatsApp tab back to the foreground."""
