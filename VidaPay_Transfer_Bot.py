@@ -2867,6 +2867,73 @@ class WhatsAppScraper:
                     pass
             self.driver = None
 
+    def send_reply(self, group_name, message_text):
+        """Send a reply message to a WhatsApp group.
+        Switches to the WhatsApp Web tab, searches for the group,
+        types the message, and presses Enter."""
+        if not self.driver:
+            self.log("No driver available for WhatsApp reply.")
+            return False
+
+        try:
+            # Switch to WhatsApp Web tab
+            self._focus_wa_window()
+            time.sleep(1)
+
+            # Search for the group
+            search_box = self._find_search_box()
+            if not search_box:
+                self.log("Could not find search box for reply.")
+                return False
+
+            self.driver.execute_script("arguments[0].focus();", search_box)
+            time.sleep(0.3)
+            search_box.send_keys(Keys.CONTROL + "a")
+            search_box.send_keys(Keys.BACKSPACE)
+            time.sleep(0.5)
+            search_box.send_keys(group_name)
+            time.sleep(2.5)
+            search_box.send_keys(Keys.ENTER)
+            time.sleep(2)
+
+            # Find the message input box (contenteditable div)
+            msg_box = None
+            for selector in [
+                "div[contenteditable='true'][data-tab='10']",
+                "div[contenteditable='true'][role='textbox']",
+                "footer div[contenteditable='true']",
+                "div[contenteditable='true']",
+            ]:
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    for el in elements:
+                        if el.is_displayed():
+                            msg_box = el
+                            break
+                    if msg_box:
+                        break
+                except Exception:
+                    continue
+
+            if not msg_box:
+                self.log("Could not find message input box for reply.")
+                return False
+
+            # Type the message and send
+            msg_box.click()
+            time.sleep(0.5)
+            msg_box.send_keys(message_text)
+            time.sleep(0.5)
+            msg_box.send_keys(Keys.ENTER)
+            time.sleep(1)
+
+            self.log(f"Reply sent to '{group_name}': {message_text[:80]}")
+            return True
+
+        except Exception as e:
+            self.log(f"Failed to send WhatsApp reply: {e}")
+            return False
+
 
 # ============================================================================
 # GUI APPLICATION
@@ -4263,6 +4330,41 @@ class VidaPayTransferApp(tk.Tk):
                     len(task["imeis"]),
                     status,
                 )
+
+                # Send WhatsApp reply to the same group
+                if wa_scraper and wa_mode != "desktop":
+                    if success:
+                        reply_msg = (
+                            f"✅ Transfer completed: {len(task['imeis'])} device(s) "
+                            f"transferred to {task['store']} "
+                            f"(Account: {task['account_id']})"
+                        )
+                    else:
+                        # Check if it was a locked store
+                        error_screenshots = getattr(crm_system, '_error_screenshots', [])
+                        if error_screenshots:
+                            error_details = "; ".join(
+                                f"{e['imei']}: {e['error']}" for e in error_screenshots
+                            )
+                            reply_msg = (
+                                f"⚠️ Transfer to {task['store']} had errors: "
+                                f"{error_details}"
+                            )
+                        else:
+                            reply_msg = (
+                                f"❌ Transfer to {task['store']} FAILED — "
+                                f"store may be LOCKED or temporarily suspended. "
+                                f"Please check manually."
+                            )
+                    
+                    self.log_msg(f"Sending WhatsApp reply to '{task['group']}'...")
+                    wa_scraper.send_reply(task["group"], reply_msg)
+                    time.sleep(2)
+                else:
+                    self.log_msg(
+                        f"Transfer {status} for {task['store']} — "
+                        f"WhatsApp reply skipped (Desktop mode or no scraper)."
+                    )
 
             self.log_msg("=== Workflow Complete ===")
 
