@@ -4357,17 +4357,41 @@ class VidaPayTransferApp(tk.Tk):
                 )
                 return
 
-            # 3. Switch back to the VidaPay tab and run the transfers
+            # 3. Run transfers one by one
             self.log_msg(
-                "Switching back to the VidaPay tab to run the transfers..."
+                f"Starting transfers: {len(tasks)} task(s) to process."
             )
-            if not crm_system.navigate_to_transfer_tool():
-                self.log_msg("Could not open Reassignment Tool. Aborting.")
-                return
 
-            for task in tasks:
+            for task_idx, task in enumerate(tasks, 1):
                 if self.stop_event.is_set():
                     break
+
+                self.log_msg(
+                    f"\n{'='*60}\n"
+                    f"Transfer {task_idx}/{len(tasks)}: {task['store']} "
+                    f"({len(task['imeis'])} IMEIs)\n"
+                    f"{'='*60}"
+                )
+
+                # Navigate to the Transfer Tool for each task (the previous
+                # transfer navigated back to Main Panel)
+                if not crm_system.navigate_to_transfer_tool():
+                    self.log_msg(
+                        f"Could not open Reassignment Tool for task {task_idx}. "
+                        f"Skipping to next task."
+                    )
+                    self.append_history(
+                        task["store"],
+                        task["account_id"],
+                        len(task["imeis"]),
+                        "FAILED — Navigation error",
+                    )
+                    continue
+
+                # Clear any previous error screenshots
+                if hasattr(crm_system, '_error_screenshots'):
+                    crm_system._error_screenshots = []
+
                 success = crm_system.execute_transfer(
                     task["account_id"], task["imeis"]
                 )
@@ -4408,11 +4432,22 @@ class VidaPayTransferApp(tk.Tk):
                     self.log_msg(f"Sending WhatsApp reply to '{task['group']}'...")
                     wa_scraper.send_reply(task["group"], reply_msg)
                     time.sleep(2)
+                    
+                    # Switch back to CRM tab for the next transfer
+                    try:
+                        crm_system.driver.switch_to.window(crm_system.main_window)
+                    except Exception:
+                        pass
                 else:
                     self.log_msg(
                         f"Transfer {status} for {task['store']} — "
                         f"WhatsApp reply skipped (Desktop mode or no scraper)."
                     )
+
+                self.log_msg(
+                    f"Task {task_idx}/{len(tasks)} complete. "
+                    f"{'Moving to next task...' if task_idx < len(tasks) else 'All tasks done!'}"
+                )
 
             self.log_msg("=== Workflow Complete ===")
 
