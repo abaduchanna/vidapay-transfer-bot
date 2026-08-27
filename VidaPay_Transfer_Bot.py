@@ -2006,6 +2006,31 @@ class VidapayTransferSystem:
             account_input.send_keys(Keys.ENTER)
             time.sleep(3)
 
+            # 1b. Check if the account was actually selected.
+            # If the dropdown still shows "Select Account..." or the
+            # account ID we typed is still in the input but not selected,
+            # the store is likely locked or temporarily suspended.
+            try:
+                current_val = account_input.get_attribute("value") or ""
+                if ("select account" in current_val.lower()
+                    or current_val.strip() == ""
+                    or (target_account_id not in current_val
+                        and "select account" not in current_val.lower()
+                        and not current_val.strip())):
+                    # Check if the RadComboBox dropdown has any items
+                    items = self.driver.find_elements(
+                        By.CSS_SELECTOR,
+                        ".rcbListItem, .rcbList > li"
+                    )
+                    if not items:
+                        self.log(
+                            f"❌ Account ID '{target_account_id}' not found — "
+                            f"store is LOCKED or temporarily suspended. Skipping."
+                        )
+                        return False
+            except Exception:
+                pass
+
             # 2. Bulk IMEIs (>2) → CSV upload path.  Falls back silently to
             #    one-by-one entry below if the upload element is missing or
             #    the upload button click fails.
