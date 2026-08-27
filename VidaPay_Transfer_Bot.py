@@ -35,6 +35,16 @@ import schedule
 import pytesseract
 from PIL import Image
 
+# BeautifulSoup for fast HTML parsing of WhatsApp Web / VidaPay CRM pages.
+# Selenium's find_elements is slow (one WebDriver round-trip per call);
+# BeautifulSoup parses driver.page_source once and extracts all texts in
+# pure Python — 10-50x faster for scraping 11 WhatsApp groups.
+try:
+    from bs4 import BeautifulSoup
+    BS4_AVAILABLE = True
+except ImportError:
+    BS4_AVAILABLE = False
+
 # Import the Edge driver class directly (not via the lazy `webdriver.Edge`
 # attribute) so PyInstaller bundles selenium.webdriver.edge.webdriver; the
 # lazy alias is invisible to static analysis and gets omitted from the EXE.
@@ -153,6 +163,14 @@ AUTOMATION_PROFILE_DIR = r"C:\VidaPay_Edge_Automation_Profile_TransferBot"
 REMOTE_DEBUGGING_PORT = 9224
 ATTACH_TO_OPEN_EDGE = True
 PAGE_LOAD_TIMEOUT = 90
+
+# "Wait for reply" feature: when a transfer request is detected, the bot
+# waits this many seconds before processing it.  During the wait it re-scans
+# the WhatsApp group for handling replies ("on it", "doing", etc.).  If a
+# reply is found, the transfer is SKIPPED.
+WAIT_FOR_REPLY_SECONDS = 90
+# Re-check interval during the wait period.
+REPLY_CHECK_INTERVAL_SECONDS = 30
 
 # Human-verification wait: Cloudflare Turnstile / reCAPTCHA auto-solver loop
 # polls every few seconds; 30 s is the upper bound before giving up.
@@ -1987,16 +2005,44 @@ class VidapayTransferSystem:
     def navigate_to_transfer_tool(self):
         self.log("Navigating to Inventory Reassignment Tool...")
 
-        # Don't close tabs — driver.close() kills the msedgedriver session.
-        # Just switch to the CRM tab.
-        self._focus_main_window()
-        time.sleep(2)
+        # ── Why we open a FRESH tab instead of reusing the CRM tab ──────
+        # After scanning 11 WhatsApp groups, the WhatsApp Web SPA leaves
+        # the Edge browser in a state where calling driver.get() on the
+        # existing CRM tab hangs for ~35s and then crashes msedgedriver
+        # with a GetHandleVerifier stacktrace (Windows-specific).
+        #
+        # Opening a new tab sidesteps whatever stale state the existing
+        # tab is in.  We close the temp tab via JS (window.close()) at the
+        # end of execute_transfer — NOT via driver.close() which would
+        # kill the whole msedgedriver session.
+        # ─────────────────────────────────────────────────────────────────
+
+        # First dismiss any lingering JS alert() / confirm() dialogs.
+        try:
+            self._dismiss_pending_alerts()
+        except Exception:
+            pass
 
         for attempt in range(3):
             try:
-                # Clear any lingering "Delete this SIM entry?" confirm()
-                # dialog before navigating — otherwise msedgedriver crashes
-                # with a GetHandleVerifier stacktrace on Windows.
+                # Try to open a fresh tab.  driver.switch_to.new_window("tab")
+                # is the cleanest way — it doesn't trigger a page load on the
+                # existing tabs, so WhatsApp Web's SPA state is preserved.
+                try:
+                    self.driver.switch_to.new_window("tab")
+                    self.log("Opened fresh tab for CRM navigation.")
+                    time.sleep(1)
+                except Exception as new_tab_err:
+                    # If new_window fails (rare on Edge), fall back to
+                    # reusing the current tab.
+                    self.log(
+                        f"Could not open fresh tab ({new_tab_err}); "
+                        f"reusing current tab."
+                    )
+                    self._focus_main_window()
+                    time.sleep(2)
+
+                # Dismiss any alert that may have popped up during tab switch.
                 self._dismiss_pending_alerts()
 
                 self.driver.get(
@@ -2054,6 +2100,9 @@ class VidapayTransferSystem:
                     )
                 )
                 time.sleep(2)
+                # Remember this tab so _navigate_back_to_main_panel can
+                # close it via JS when the transfer is done.
+                self._crm_tab_handle = self.driver.current_window_handle
                 return True
             except Exception as e:
                 err_str = str(e)[:200]
@@ -2480,28 +2529,41 @@ class VidapayTransferSystem:
         return True
 
     def _navigate_back_to_main_panel(self):
-        """After Submit, wait briefly and navigate back to the Main Panel."""
-        self.log("Transfer submitted. Navigating back to Main Panel...")
+        """After Submit, close the temp CRM tab (opened in
+        navigate_to_transfer_tool) and switch back to the main CRM tab.
+
+        We close the temp tab via window.close() in JavaScript — NOT via
+        driver.close(), which would kill the msedgedriver session.
+        """
+        self.log("Transfer submitted. Closing temp CRM tab...")
+        crm_tab = getattr(self, "_crm_tab_handle", None)
+
+        # Try to close the temp tab via JS (safe — only works on windows
+        # opened by script, which is the case for switch_to.new_window("tab")).
         try:
-            spans = self.driver.find_elements(
-                By.CSS_SELECTOR, "span.rmText"
-            )
-            for span in spans:
-                try:
-                    txt = (span.text or "").strip()
-                except Exception:
-                    txt = ""
-                if "Main Panel" in txt:
-                    self.driver.execute_script(
-                        "arguments[0].click();", span
-                    )
-                    time.sleep(2)
-                    self.log("Navigated back to Main Panel.")
-                    return
+            if crm_tab and crm_tab in self.driver.window_handles:
+                # Make sure we're on the temp tab before calling window.close().
+                self.driver.switch_to.window(crm_tab)
+                self.driver.execute_script("window.close();")
+                time.sleep(1)
+                self.log("Closed temp CRM tab via JS.")
+        except Exception as close_err:
+            self.log(f"Could not close temp tab via JS: {close_err}")
+
+        # Switch back to the main CRM window.
+        try:
+            if (
+                getattr(self, "main_window", None)
+                and self.main_window in self.driver.window_handles
+            ):
+                self.driver.switch_to.window(self.main_window)
+                self.log("Switched back to main CRM tab.")
+                return
         except Exception:
             pass
 
-        # Fallback: navigate directly to the Main Panel URL.
+        # Fallback: navigate directly to the Main Panel URL on whatever
+        # tab is currently active.
         try:
             self.driver.get(
                 "https://www.vidapaycrm.com/Main%20Panel.aspx"
@@ -2804,6 +2866,91 @@ class WhatsAppScraper:
             pass
         return False
 
+    # ------------------------------------------------------------------
+    # BeautifulSoup-based message extraction (much faster than Selenium
+    # find_elements — one page_source fetch vs N WebDriver round-trips).
+    # ------------------------------------------------------------------
+    def _extract_messages_bs4(self):
+        """Parse the currently-visible WhatsApp chat with BeautifulSoup.
+
+        Returns a list of dicts: [{"text": str, "is_incoming": bool, "sender": str}, ...]
+        ordered top-to-bottom as they appear in the chat.
+
+        Falls back to [] if BeautifulSoup isn't available or parsing fails.
+        """
+        if not BS4_AVAILABLE:
+            return []
+        try:
+            html = self.driver.page_source
+        except Exception:
+            return []
+        if not html:
+            return []
+
+        soup = BeautifulSoup(html, "html.parser")
+        messages = []
+
+        # WhatsApp Web renders each message as a <div data-id="..."> row.
+        # The text lives inside nested <span class="selectable-text"> elements.
+        # We pick the most specific selector that works on the current WA build.
+        #
+        # Strategy A: message rows identified by data-id (most reliable).
+        msg_rows = soup.select("div[data-id]")
+        if not msg_rows:
+            # Strategy B: rows identified by role=row.
+            msg_rows = soup.select("div[role='row']")
+        if not msg_rows:
+            # Strategy C: any element that looks like a message bubble.
+            msg_rows = soup.select(
+                "div.message-in, div[class*='message-in'], "
+                "div[class*='msg'], div.copyable-text"
+            )
+
+        for row in msg_rows:
+            try:
+                # Concatenate all visible text in the row (sender + body + time).
+                text = row.get_text(separator="\n", strip=True)
+                if not text or len(text) < 3:
+                    continue
+
+                # Heuristic: WhatsApp marks incoming messages with class
+                # "message-in" and outgoing with "message-out". If neither
+                # matches, fall back to checking for a "You" sender prefix.
+                row_class = " ".join(row.get("class", []))
+                is_incoming = (
+                    "message-in" in row_class
+                    or "incoming" in row_class.lower()
+                )
+                if not is_incoming:
+                    # Outgoing messages typically start with "You:" or have
+                    # a "message-out" class. Treat everything else as incoming.
+                    is_incoming = not (
+                        text.lower().startswith("you:")
+                        or "message-out" in row_class
+                    )
+
+                # Try to extract the sender name (first non-empty text line
+                # that is NOT the message body).
+                sender = ""
+                first_span = row.select_one(
+                    "span[role='aria'], span[dir='auto'], "
+                    "span.selectable-text"
+                )
+                if first_span:
+                    sender = first_span.get_text(strip=True)
+
+                messages.append({
+                    "text": text,
+                    "is_incoming": is_incoming,
+                    "sender": sender,
+                    # Keep a reference to the row for screenshot/OCR fallback.
+                    "_row_idx": len(messages),
+                })
+            except Exception:
+                continue
+
+        return messages
+
     def check_group_notifications(self):
         """Check WhatsApp Web for groups with unread message badges.
         Also ensures notification settings are enabled.
@@ -3098,70 +3245,112 @@ class WhatsAppScraper:
 
                 # Find all message elements in the chat.
                 # WhatsApp Web changes their DOM frequently, so try multiple selectors.
+                #
+                # PRIMARY PATH (BeautifulSoup): parse driver.page_source once
+                # and extract all message texts in pure Python.  This is 10-50x
+                # faster than calling find_elements 9 times per group.
                 messages = []
-                for selector in [
-                    "div.message-in",                                          # older WhatsApp
-                    "div[data-id] > div > div",                                # message rows
-                    "div[role='row']",                                         # newer WhatsApp
-                    "div[class*='message-in']",                                # class contains
-                    "div[class*='message'] div[class*='bubble']",              # bubble containers
-                    "span.selectable-text",                                    # text spans
-                    "div.copyable-text",                                       # copyable text
-                    "[data-testid='conversation-panel-messages'] div",         # test-id based
-                    "div[class*='msg']",                                       # any msg class
-                ]:
-                    try:
-                        found = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                        if found:
-                            messages = found
-                            self.log(f"  Using selector: {selector} ({len(messages)} elements)")
-                            break
-                    except Exception:
-                        continue
+                bs4_messages = []
+                try:
+                    bs4_messages = self._extract_messages_bs4()
+                except Exception as bs4_err:
+                    self.log(f"  BS4 extraction failed: {bs4_err}")
 
-                # If still no messages, try a broader approach: get all text
-                # from the chat panel via JavaScript
-                if not messages:
-                    try:
-                        # Get the chat panel and extract all text blocks
-                        chat_texts = self.driver.execute_script("""
-                            // Find the chat messages panel
-                            const panels = document.querySelectorAll(
-                                '[data-testid="conversation-panel-messages"], '
-                              + 'div[class*="message-list"], '
-                              + 'div[class*="chat-body"], '
-                              + 'div[role="application"] div[role="list"]'
-                            );
-                            if (panels.length === 0) return [];
-                            
-                            const panel = panels[panels.length - 1];
-                            // Get all text nodes that look like messages
-                            const textNodes = [];
-                            const walker = document.createTreeWalker(
-                                panel,
-                                NodeFilter.SHOW_TEXT,
-                                null,
-                                false
-                            );
-                            while (walker.nextNode()) {
-                                const text = walker.currentNode.textContent.trim();
-                                if (text.length > 3) {
-                                    textNodes.push(text);
+                if bs4_messages:
+                    self.log(
+                        f"  BS4 extracted {len(bs4_messages)} messages "
+                        f"(skipped Selenium selector fallback)."
+                    )
+
+                    # Wrap each bs4 dict in a tiny shim that mimics the
+                    # Selenium WebElement API the rest of find_and_read_groups
+                    # depends on (.text, .screenshot(), .find_elements()).
+                    class _BS4Msg:
+                        def __init__(self, data, driver):
+                            self.text = data["text"]
+                            self._driver = driver
+                            self._is_incoming = data["is_incoming"]
+                            self._sender = data.get("sender", "")
+
+                        def screenshot(self, path):
+                            # BS4 messages have no live element to screenshot.
+                            # The OCR fallback path will just no-op.
+                            pass
+
+                        def find_elements(self, by, selector):
+                            # BS4 messages can't run CSS queries on a stale
+                            # soup tree — return [] so the caller falls through
+                            # to the JS-walker / OCR path.
+                            return []
+
+                    messages = [_BS4Msg(m, self.driver) for m in bs4_messages]
+                else:
+                    # FALLBACK PATH (Selenium): use the original multi-selector
+                    # approach when BS4 returns nothing (e.g. WA changed its
+                    # DOM, or BS4 isn't installed).
+                    for selector in [
+                        "div.message-in",                                          # older WhatsApp
+                        "div[data-id] > div > div",                                # message rows
+                        "div[role='row']",                                         # newer WhatsApp
+                        "div[class*='message-in']",                                # class contains
+                        "div[class*='message'] div[class*='bubble']",              # bubble containers
+                        "span.selectable-text",                                    # text spans
+                        "div.copyable-text",                                       # copyable text
+                        "[data-testid='conversation-panel-messages'] div",         # test-id based
+                        "div[class*='msg']",                                       # any msg class
+                    ]:
+                        try:
+                            found = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                            if found:
+                                messages = found
+                                self.log(f"  Using selector: {selector} ({len(messages)} elements)")
+                                break
+                        except Exception:
+                            continue
+
+                    # If still no messages, try a broader approach: get all text
+                    # from the chat panel via JavaScript
+                    if not messages:
+                        try:
+                            # Get the chat panel and extract all text blocks
+                            chat_texts = self.driver.execute_script("""
+                                // Find the chat messages panel
+                                const panels = document.querySelectorAll(
+                                    '[data-testid="conversation-panel-messages"], '
+                                  + 'div[class*="message-list"], '
+                                  + 'div[class*="chat-body"], '
+                                  + 'div[role="application"] div[role="list"]'
+                                );
+                                if (panels.length === 0) return [];
+
+                                const panel = panels[panels.length - 1];
+                                // Get all text nodes that look like messages
+                                const textNodes = [];
+                                const walker = document.createTreeWalker(
+                                    panel,
+                                    NodeFilter.SHOW_TEXT,
+                                    null,
+                                    false
+                                );
+                                while (walker.nextNode()) {
+                                    const text = walker.currentNode.textContent.trim();
+                                    if (text.length > 3) {
+                                        textNodes.push(text);
+                                    }
                                 }
-                            }
-                            return textNodes;
-                        """)
-                        if chat_texts:
-                            self.log(f"  Found {len(chat_texts)} text blocks via JS walker.")
-                            # Create a simple wrapper for each text block
-                            class _TextMsg:
-                                def __init__(self, text):
-                                    self.text = text
-                                def screenshot(self, path):
-                                    pass  # no screenshot for text-only
-                            messages = [_TextMsg(t) for t in chat_texts]
-                    except Exception as js_err:
-                        self.log(f"  JS text walker failed: {js_err}")
+                                return textNodes;
+                            """)
+                            if chat_texts:
+                                self.log(f"  Found {len(chat_texts)} text blocks via JS walker.")
+                                # Create a simple wrapper for each text block
+                                class _TextMsg:
+                                    def __init__(self, text):
+                                        self.text = text
+                                    def screenshot(self, path):
+                                        pass  # no screenshot for text-only
+                                messages = [_TextMsg(t) for t in chat_texts]
+                        except Exception as js_err:
+                            self.log(f"  JS text walker failed: {js_err}")
                 self.log(
                     f"[{group_name}] Found {len(messages)} recent incoming messages."
                 )
@@ -3339,6 +3528,11 @@ class WhatsAppScraper:
                                 "store": target_store,
                                 "account_id": target_account,
                                 "imeis": imeis,
+                                # Save a short snippet of the trigger message
+                                # so the "wait for reply" feature can find
+                                # it again when re-scanning the group.
+                                "trigger_text": msg.text[:60],
+                                "detected_at": time.time(),
                             })
                         else:
                             self.log(
@@ -3474,6 +3668,146 @@ class WhatsAppScraper:
             self.log(f"Image scan error: {e}")
         
         return list(all_imeis)
+
+    # ------------------------------------------------------------------
+    # "Wait for reply" feature
+    # ------------------------------------------------------------------
+    # When a transfer request is detected, the bot does NOT process it
+    # immediately.  Instead it waits WAIT_FOR_REPLY_SECONDS (default 90s)
+    # and re-scans the group for replies that look like someone is
+    # already handling the transfer ("on it", "doing", "will do", etc.).
+    # If such a reply is found, the transfer is SKIPPED.
+    # If no reply is found within the timeout, the transfer is processed.
+
+    # Phrases that indicate someone is handling the transfer manually.
+    # Matched as substrings (case-insensitive) against message text.
+    REPLY_HANDLING_PHRASES = [
+        "on it",
+        "doing",
+        "on the way",
+        "will do",
+        "handling",
+        "i got it",
+        "i got this",
+        "got it",
+        "got this",
+        "taking care",
+        "let me do",
+        "i'll do",
+        "ill do",
+        "i am doing",
+        "im doing",
+        "i'm doing",
+        "ok doing",
+        "sure doing",
+        "yes doing",
+        "doing it",
+        "already done",
+        "already transferred",
+        "already sent",
+        "done already",
+    ]
+
+    def check_for_reply_in_group(self, group_name, trigger_text_snippet):
+        """Re-scan a group for messages AFTER a trigger message and check
+        whether anyone has replied with a handling phrase like "on it" or
+        "doing".
+
+        Args:
+            group_name: WhatsApp group to scan.
+            trigger_text_snippet: A short substring (first ~30 chars) of
+                the original trigger message.  Used to find the trigger
+                in the re-scanned message list and only look at messages
+                AFTER it.
+
+        Returns:
+            (True, reply_text) if a handling reply was found,
+            (False, "") if no reply was found.
+        """
+        if not self.driver:
+            return False, ""
+
+        try:
+            self._focus_wa_window()
+            time.sleep(0.5)
+
+            search_box = self._find_search_box()
+            if not search_box:
+                return False, ""
+
+            # Search for the group
+            self.driver.execute_script("arguments[0].focus();", search_box)
+            time.sleep(0.3)
+            search_box.send_keys(Keys.CONTROL + "a")
+            search_box.send_keys(Keys.BACKSPACE)
+            time.sleep(0.5)
+            search_box.send_keys(group_name)
+            time.sleep(2.5)
+            search_box.send_keys(Keys.ENTER)
+            time.sleep(3)
+
+            # Use BS4 to extract messages (fast).
+            messages = self._extract_messages_bs4()
+            if not messages:
+                self.log(f"  [reply-check] No messages found in '{group_name}'.")
+                # Clear search
+                try:
+                    search_box.send_keys(Keys.ESCAPE)
+                except Exception:
+                    pass
+                return False, ""
+
+            # Find the trigger message's position in the list.
+            trigger_snippet_lower = trigger_text_snippet.lower().strip()
+            trigger_idx = -1
+            for i, msg in enumerate(messages):
+                if trigger_snippet_lower in msg["text"].lower():
+                    trigger_idx = i
+                    break
+
+            if trigger_idx < 0:
+                # Trigger message not found in the current view — it may
+                # have scrolled off.  Assume no reply (safer than skipping).
+                self.log(
+                    f"  [reply-check] Trigger message not in current view "
+                    f"of '{group_name}'. Assuming no reply."
+                )
+                try:
+                    search_box.send_keys(Keys.ESCAPE)
+                except Exception:
+                    pass
+                return False, ""
+
+            # Check messages AFTER the trigger for handling phrases.
+            for msg in messages[trigger_idx + 1:]:
+                text_lower = msg["text"].lower()
+                for phrase in self.REPLY_HANDLING_PHRASES:
+                    if phrase in text_lower:
+                        # Found a handling reply — skip this transfer.
+                        self.log(
+                            f"  [reply-check] Handling reply detected in "
+                            f"'{group_name}': \"{msg['text'][:80]}\" "
+                            f"(matched: '{phrase}')"
+                        )
+                        try:
+                            search_box.send_keys(Keys.ESCAPE)
+                        except Exception:
+                            pass
+                        return True, msg["text"]
+
+            self.log(
+                f"  [reply-check] No handling reply in '{group_name}' "
+                f"(checked {len(messages) - trigger_idx - 1} messages after trigger)."
+            )
+            try:
+                search_box.send_keys(Keys.ESCAPE)
+            except Exception:
+                pass
+            return False, ""
+
+        except Exception as e:
+            self.log(f"  [reply-check] Error scanning '{group_name}': {e}")
+            return False, ""
 
     def close(self):
         # Only quit the browser if this scraper launched it. When reusing the
@@ -4803,6 +5137,87 @@ class VidaPayTransferApp(tk.Tk):
         self.log_msg("Sending stop signal... Please wait.")
         self.stop_event.set()
 
+    def _process_one_task(self, task, crm_system, wa_scraper, wa_mode):
+        """Process a single transfer task end-to-end:
+        navigate to CRM → execute transfer → send WhatsApp reply.
+
+        Refactored out of _bot_workflow so both the initial-scan path and
+        the monitoring loop can call the same code.
+        """
+        # Navigate to the Transfer Tool
+        if not crm_system.navigate_to_transfer_tool():
+            self.log_msg(
+                f"Could not open Reassignment Tool for {task['store']}. Skipping."
+            )
+            self.append_history(
+                task["store"], task["account_id"],
+                len(task["imeis"]), "FAILED — Navigation error",
+            )
+            return
+
+        # Clear any previous error screenshots
+        if hasattr(crm_system, '_error_screenshots'):
+            crm_system._error_screenshots = []
+
+        success = crm_system.execute_transfer(
+            task["account_id"], task["imeis"]
+        )
+        status = "SUCCESS" if success else "FAILED"
+        self.append_history(
+            task["store"], task["account_id"],
+            len(task["imeis"]), status,
+        )
+
+        # Send WhatsApp reply to the same group
+        if wa_scraper and wa_mode != "desktop":
+            if success:
+                reply_msg = (
+                    f"✅ Transfer completed: {len(task['imeis'])} device(s) "
+                    f"transferred to {task['store']} "
+                    f"(Account: {task['account_id']})"
+                )
+            else:
+                error_screenshots = getattr(crm_system, '_error_screenshots', [])
+                if error_screenshots:
+                    error_details = "; ".join(
+                        f"{e['imei']}: {e['error']}" for e in error_screenshots
+                    )
+                    reply_msg = (
+                        f"⚠️ Transfer to {task['store']} had errors: "
+                        f"{error_details}"
+                    )
+                else:
+                    reply_msg = (
+                        f"❌ Transfer to {task['store']} FAILED — "
+                        f"store may be LOCKED or temporarily suspended. "
+                        f"Please check manually."
+                    )
+
+            self.log_msg(f"Sending WhatsApp reply to '{task['group']}'...")
+            try:
+                wa_scraper.send_reply(task["group"], reply_msg)
+            except Exception as reply_err:
+                self.log_msg(f"WhatsApp reply failed: {reply_err}")
+            time.sleep(2)
+
+            # Switch back to main CRM tab (the temp CRM tab was already
+            # closed by _navigate_back_to_main_panel inside execute_transfer).
+            try:
+                if (
+                    getattr(crm_system, "main_window", None)
+                    and crm_system.main_window in crm_system.driver.window_handles
+                ):
+                    crm_system.driver.switch_to.window(crm_system.main_window)
+            except Exception:
+                pass
+        else:
+            self.log_msg(
+                f"Transfer {status} for {task['store']} — "
+                f"WhatsApp reply skipped (Desktop mode or no scraper)."
+            )
+
+        self.log_msg(f"Task complete: {task['store']} → {status}.")
+
     def _bot_workflow(self, crm_acc, crm_usr, crm_pwd, wa_groups_str, wa_mode="web", trigger_words_str=""):
         self.log_msg("=== Starting Transfer Bot Workflow ===")
         wa_scraper = None
@@ -4925,109 +5340,50 @@ class VidaPayTransferApp(tk.Tk):
                 f"Extraction complete: {len(tasks)} transfer request(s) found."
             )
 
-            if not tasks:
+            # ── "Wait for reply" feature ──────────────────────────────────
+            # Instead of processing transfers immediately, we add them to a
+            # pending queue.  Each task has a `process_after` timestamp set
+            # to `detected_at + WAIT_FOR_REPLY_SECONDS`.  The monitoring loop
+            # re-checks each pending task's group for handling replies
+            # ("on it", "doing", etc.) — if found, the task is skipped.
+            # When `process_after` is reached without a reply, the task is
+            # processed.
+            pending_tasks = []
+            for t in tasks:
+                t["process_after"] = t.get("detected_at", time.time()) + WAIT_FOR_REPLY_SECONDS
+                pending_tasks.append(t)
+
+            if not pending_tasks:
                 self.log_msg(
                     "No pending transfer requests found in initial scan. "
                     "Entering monitoring mode..."
                 )
-                # Don't return — fall through to the monitoring loop below
             else:
-                # 3. Run transfers one by one
                 self.log_msg(
-                    f"Starting transfers: {len(tasks)} task(s) to process."
+                    f"{len(pending_tasks)} transfer request(s) queued. "
+                    f"Waiting {WAIT_FOR_REPLY_SECONDS}s before processing each "
+                    f"(checking for 'on it' / 'doing' replies)."
                 )
-
-                # Process initial transfers
-                for task_idx, task in enumerate(tasks, 1):
-                    if self.stop_event.is_set():
-                        break
-
+                for i, t in enumerate(pending_tasks, 1):
                     self.log_msg(
-                        f"\n{'='*60}\n"
-                        f"Transfer {task_idx}/{len(tasks)}: {task['store']} "
-                        f"({len(task['imeis'])} IMEIs)\n"
-                        f"{'='*60}"
+                        f"  [{i}/{len(pending_tasks)}] {t['store']} "
+                        f"({len(t['imeis'])} IMEIs) from '{t['group']}' — "
+                        f"will process in {WAIT_FOR_REPLY_SECONDS}s unless someone replies."
                     )
 
-                    # Navigate to the Transfer Tool for each task
-                    if not crm_system.navigate_to_transfer_tool():
-                        self.log_msg(
-                            f"Could not open Reassignment Tool for task {task_idx}. "
-                            f"Skipping to next task."
-                        )
-                        self.append_history(
-                            task["store"], task["account_id"],
-                            len(task["imeis"]), "FAILED — Navigation error",
-                        )
-                        continue
-
-                    # Clear any previous error screenshots
-                    if hasattr(crm_system, '_error_screenshots'):
-                        crm_system._error_screenshots = []
-
-                    success = crm_system.execute_transfer(
-                        task["account_id"], task["imeis"]
-                    )
-                    status = "SUCCESS" if success else "FAILED"
-                    self.append_history(
-                        task["store"], task["account_id"],
-                        len(task["imeis"]), status,
-                    )
-
-                    # Send WhatsApp reply to the same group
-                    if wa_scraper and wa_mode != "desktop":
-                        if success:
-                            reply_msg = (
-                                f"✅ Transfer completed: {len(task['imeis'])} device(s) "
-                                f"transferred to {task['store']} "
-                                f"(Account: {task['account_id']})"
-                            )
-                        else:
-                            error_screenshots = getattr(crm_system, '_error_screenshots', [])
-                            if error_screenshots:
-                                error_details = "; ".join(
-                                    f"{e['imei']}: {e['error']}" for e in error_screenshots
-                                )
-                                reply_msg = (
-                                    f"⚠️ Transfer to {task['store']} had errors: "
-                                    f"{error_details}"
-                                )
-                            else:
-                                reply_msg = (
-                                    f"❌ Transfer to {task['store']} FAILED — "
-                                    f"store may be LOCKED or temporarily suspended. "
-                                    f"Please check manually."
-                                )
-
-                        self.log_msg(f"Sending WhatsApp reply to '{task['group']}'...")
-                        wa_scraper.send_reply(task["group"], reply_msg)
-                        time.sleep(2)
-
-                        # Switch back to CRM tab
-                        try:
-                            crm_system.driver.switch_to.window(crm_system.main_window)
-                        except Exception:
-                            pass
-                    else:
-                        self.log_msg(
-                            f"Transfer {status} for {task['store']} — "
-                            f"WhatsApp reply skipped (Desktop mode or no scraper)."
-                        )
-
-                    self.log_msg(
-                        f"Task {task_idx}/{len(tasks)} complete. "
-                        f"{'Moving to next task...' if task_idx < len(tasks) else 'All tasks done!'}"
-                    )
-
-            self.log_msg("=== Workflow Complete ===")
+            self.log_msg("=== Initial Scan Complete ===")
 
             # ── Continuous monitoring loop ───────────────────────────────────
-            # After processing all initial tasks, keep monitoring for new
-            # transfer requests. The bot checks all groups every 30 seconds
-            # and processes any new transfers it finds.
+            # Polls pending_tasks every MONITOR_INTERVAL seconds.  For each
+            # task whose process_after has not yet been reached, re-checks
+            # the group for handling replies.  When process_after is reached
+            # and no reply was found, processes the transfer.
+            #
+            # Also scans for NEW transfer requests every MONITOR_INTERVAL.
             MONITOR_INTERVAL = 10  # seconds between checks
+
             self.log_msg(
-                f"Entering continuous monitoring mode — checking notifications every {MONITOR_INTERVAL}s. "
+                f"Entering continuous monitoring mode — checking every {MONITOR_INTERVAL}s. "
                 f"Click Stop to exit."
             )
 
@@ -5036,85 +5392,104 @@ class VidaPayTransferApp(tk.Tk):
                 if self.stop_event.is_set():
                     break
 
-                self.log_msg("\n--- Monitoring: checking for unread messages ---")
+                now = time.time()
 
-                # Switch to WhatsApp tab and scan ONLY groups with unread messages
-                if wa_scraper and wa_mode != "desktop":
-                    new_tasks = wa_scraper.find_and_read_groups(
-                        self.mappings, trigger_words_str, only_unread=True
+                # ── Step 1: Re-check pending tasks for replies / timeout ──
+                still_pending = []
+                for task in pending_tasks:
+                    if self.stop_event.is_set():
+                        break
+
+                    # Has the wait period elapsed?
+                    wait_remaining = task["process_after"] - now
+
+                    if wait_remaining > 0:
+                        # Still waiting.  Re-check the group for handling
+                        # replies every REPLY_CHECK_INTERVAL_SECONDS.
+                        last_check = task.get("last_reply_check", 0)
+                        if now - last_check >= REPLY_CHECK_INTERVAL_SECONDS:
+                            self.log_msg(
+                                f"\n--- Reply check: '{task['group']}' for "
+                                f"{task['store']} "
+                                f"({int(wait_remaining)}s remaining) ---"
+                            )
+                            try:
+                                replied, reply_text = wa_scraper.check_for_reply_in_group(
+                                    task["group"],
+                                    task.get("trigger_text", ""),
+                                )
+                            except Exception as rc_err:
+                                self.log_msg(f"Reply check error: {rc_err}")
+                                replied, reply_text = False, ""
+                            task["last_reply_check"] = now
+
+                            if replied:
+                                self.log_msg(
+                                    f"✋ SKIP: Someone is handling the transfer "
+                                    f"to {task['store']} in '{task['group']}': "
+                                    f"\"{reply_text[:80]}\""
+                                )
+                                self.append_history(
+                                    task["store"], task["account_id"],
+                                    len(task["imeis"]),
+                                    "SKIPPED — Someone replied (handling manually)",
+                                )
+                                # Do NOT add to still_pending — drop this task.
+                                continue
+                        # Keep waiting.
+                        still_pending.append(task)
+                        continue
+
+                    # ── wait period elapsed → process the transfer ──
+                    self.log_msg(
+                        f"\n{'='*60}\n"
+                        f"Processing (no reply received): {task['store']} "
+                        f"({len(task['imeis'])} IMEIs) from '{task['group']}'\n"
+                        f"{'='*60}"
                     )
+                    self._process_one_task(
+                        task, crm_system, wa_scraper, wa_mode
+                    )
+                    # Do NOT re-add to still_pending — it's processed.
+
+                pending_tasks = still_pending
+
+                # ── Step 2: Scan for NEW transfer requests ──
+                self.log_msg("\n--- Monitoring: checking for unread messages ---")
+                if wa_scraper and wa_mode != "desktop":
+                    try:
+                        new_tasks = wa_scraper.find_and_read_groups(
+                            self.mappings, trigger_words_str, only_unread=True
+                        )
+                    except Exception as scan_err:
+                        self.log_msg(f"Monitoring scan error: {scan_err}")
+                        new_tasks = []
                     self.log_msg(
                         f"Monitoring: {len(new_tasks)} new transfer request(s) found."
                     )
 
-                    if new_tasks:
-                        for task_idx, task in enumerate(new_tasks, 1):
-                            if self.stop_event.is_set():
-                                break
-
+                    for t in new_tasks:
+                        # De-dup: skip if a pending task for the same store
+                        # + IMEIs already exists (avoids double-processing).
+                        is_dup = any(
+                            p["store"] == t["store"]
+                            and p["imeis"] == t["imeis"]
+                            for p in pending_tasks
+                        )
+                        if is_dup:
                             self.log_msg(
-                                f"\n{'='*60}\n"
-                                f"Transfer {task_idx}/{len(new_tasks)}: {task['store']} "
-                                f"({len(task['imeis'])} IMEIs)\n"
-                                f"{'='*60}"
+                                f"  Skipping duplicate request for "
+                                f"{t['store']} (already pending)."
                             )
-
-                            # Navigate to Transfer Tool
-                            if not crm_system.navigate_to_transfer_tool():
-                                self.log_msg(f"Navigation failed for task {task_idx}. Skipping.")
-                                self.append_history(
-                                    task["store"], task["account_id"],
-                                    len(task["imeis"]), "FAILED — Navigation error",
-                                )
-                                continue
-
-                            # Clear previous errors
-                            if hasattr(crm_system, '_error_screenshots'):
-                                crm_system._error_screenshots = []
-
-                            success = crm_system.execute_transfer(
-                                task["account_id"], task["imeis"]
-                            )
-                            status = "SUCCESS" if success else "FAILED"
-                            self.append_history(
-                                task["store"], task["account_id"],
-                                len(task["imeis"]), status,
-                            )
-
-                            # Send WhatsApp reply
-                            if success:
-                                reply_msg = (
-                                    f"✅ Transfer completed: {len(task['imeis'])} device(s) "
-                                    f"transferred to {task['store']} "
-                                    f"(Account: {task['account_id']})"
-                                )
-                            else:
-                                error_screenshots = getattr(crm_system, '_error_screenshots', [])
-                                if error_screenshots:
-                                    error_details = "; ".join(
-                                        f"{e['imei']}: {e['error']}" for e in error_screenshots
-                                    )
-                                    reply_msg = f"⚠️ Transfer to {task['store']} had errors: {error_details}"
-                                else:
-                                    reply_msg = (
-                                        f"❌ Transfer to {task['store']} FAILED — "
-                                        f"store may be LOCKED or temporarily suspended."
-                                    )
-
-                            self.log_msg(f"Sending WhatsApp reply to '{task['group']}'...")
-                            wa_scraper.send_reply(task["group"], reply_msg)
-                            time.sleep(2)
-
-                            # Switch back to CRM tab
-                            try:
-                                crm_system.driver.switch_to.window(crm_system.main_window)
-                            except Exception:
-                                pass
-
-                            self.log_msg(f"Task {task_idx}/{len(new_tasks)} complete.")
-                    else:
-                        # Don't log every 10s when nothing found — too noisy
-                        pass
+                            continue
+                        t["process_after"] = time.time() + WAIT_FOR_REPLY_SECONDS
+                        t["detected_at"] = time.time()
+                        pending_tasks.append(t)
+                        self.log_msg(
+                            f"  Queued: {t['store']} ({len(t['imeis'])} IMEIs) "
+                            f"from '{t['group']}' — will process in "
+                            f"{WAIT_FOR_REPLY_SECONDS}s unless someone replies."
+                        )
                 else:
                     self.log_msg("Monitoring skipped (Desktop mode or no scraper).")
                     break
