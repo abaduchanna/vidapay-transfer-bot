@@ -4514,6 +4514,103 @@ class VidaPayTransferApp(tk.Tk):
 
             self.log_msg("=== Workflow Complete ===")
 
+            # ── Continuous monitoring loop ───────────────────────────────────
+            # After processing all initial tasks, keep monitoring for new
+            # transfer requests. The bot checks all groups every 30 seconds
+            # and processes any new transfers it finds.
+            MONITOR_INTERVAL = 30  # seconds between checks
+            self.log_msg(
+                f"Entering continuous monitoring mode — checking every {MONITOR_INTERVAL}s. "
+                f"Click Stop to exit."
+            )
+
+            while not self.stop_event.is_set():
+                time.sleep(MONITOR_INTERVAL)
+                if self.stop_event.is_set():
+                    break
+
+                self.log_msg("\n--- Monitoring: checking for new transfer requests ---")
+
+                # Switch to WhatsApp tab and scan for new messages
+                if wa_scraper and wa_mode != "desktop":
+                    new_tasks = wa_scraper.find_and_read_groups(self.mappings, trigger_words_str)
+                    self.log_msg(
+                        f"Monitoring: {len(new_tasks)} new transfer request(s) found."
+                    )
+
+                    if new_tasks:
+                        for task_idx, task in enumerate(new_tasks, 1):
+                            if self.stop_event.is_set():
+                                break
+
+                            self.log_msg(
+                                f"\n{'='*60}\n"
+                                f"Transfer {task_idx}/{len(new_tasks)}: {task['store']} "
+                                f"({len(task['imeis'])} IMEIs)\n"
+                                f"{'='*60}"
+                            )
+
+                            # Navigate to Transfer Tool
+                            if not crm_system.navigate_to_transfer_tool():
+                                self.log_msg(f"Navigation failed for task {task_idx}. Skipping.")
+                                self.append_history(
+                                    task["store"], task["account_id"],
+                                    len(task["imeis"]), "FAILED — Navigation error",
+                                )
+                                continue
+
+                            # Clear previous errors
+                            if hasattr(crm_system, '_error_screenshots'):
+                                crm_system._error_screenshots = []
+
+                            success = crm_system.execute_transfer(
+                                task["account_id"], task["imeis"]
+                            )
+                            status = "SUCCESS" if success else "FAILED"
+                            self.append_history(
+                                task["store"], task["account_id"],
+                                len(task["imeis"]), status,
+                            )
+
+                            # Send WhatsApp reply
+                            if success:
+                                reply_msg = (
+                                    f"✅ Transfer completed: {len(task['imeis'])} device(s) "
+                                    f"transferred to {task['store']} "
+                                    f"(Account: {task['account_id']})"
+                                )
+                            else:
+                                error_screenshots = getattr(crm_system, '_error_screenshots', [])
+                                if error_screenshots:
+                                    error_details = "; ".join(
+                                        f"{e['imei']}: {e['error']}" for e in error_screenshots
+                                    )
+                                    reply_msg = f"⚠️ Transfer to {task['store']} had errors: {error_details}"
+                                else:
+                                    reply_msg = (
+                                        f"❌ Transfer to {task['store']} FAILED — "
+                                        f"store may be LOCKED or temporarily suspended."
+                                    )
+
+                            self.log_msg(f"Sending WhatsApp reply to '{task['group']}'...")
+                            wa_scraper.send_reply(task["group"], reply_msg)
+                            time.sleep(2)
+
+                            # Switch back to CRM tab
+                            try:
+                                crm_system.driver.switch_to.window(crm_system.main_window)
+                            except Exception:
+                                pass
+
+                            self.log_msg(f"Task {task_idx}/{len(new_tasks)} complete.")
+                    else:
+                        self.log_msg("No new transfer requests. Waiting...")
+                else:
+                    self.log_msg("Monitoring skipped (Desktop mode or no scraper).")
+                    break
+
+            self.log_msg("Monitoring stopped.")
+
         except Exception as e:
             self.log_msg(f"Critical workflow error: {e}")
         finally:
