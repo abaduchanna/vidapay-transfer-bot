@@ -2703,16 +2703,29 @@ class WhatsAppScraper:
                             f"Transfer request detected in '{group_name}' "
                             f"for '{target_store}' -> Account: {target_account}"
                         )
-                        img_path = os.path.join(
-                            os.environ.get("TEMP", ""), "wa_msg_temp.png"
-                        )
-                        msg.screenshot(img_path)
-
-                        imeis = self._extract_imeis_from_image(img_path)
+                        
+                        # Try extracting IMEIs from the message text FIRST
+                        # (handles messages like "trf to kipling 357612117960162")
+                        imeis = self._extract_imeis_from_text(text_content)
+                        
                         if imeis:
                             self.log(
-                                f"Extracted {len(imeis)} IMEIs via OCR."
+                                f"Extracted {len(imeis)} IMEIs from message text."
                             )
+                        else:
+                            # Fallback: screenshot the message and OCR for IMEIs
+                            # (handles messages with images containing IMEIs)
+                            img_path = os.path.join(
+                                os.environ.get("TEMP", ""), "wa_msg_temp.png"
+                            )
+                            msg.screenshot(img_path)
+                            imeis = self._extract_imeis_from_image(img_path)
+                            if imeis:
+                                self.log(
+                                    f"Extracted {len(imeis)} IMEIs via OCR from image."
+                                )
+                        
+                        if imeis:
                             transfer_tasks.append({
                                 "group": group_name,
                                 "store": target_store,
@@ -2721,7 +2734,7 @@ class WhatsAppScraper:
                             })
                         else:
                             self.log(
-                                "No valid IMEIs found in the message image."
+                                "No valid IMEIs found in message text or image."
                             )
 
                 search_box.send_keys(Keys.ESCAPE)
@@ -2731,6 +2744,33 @@ class WhatsAppScraper:
                 self.log(f"Error scanning group '{group_name}': {e}")
 
         return transfer_tasks
+
+    def _extract_imeis_from_text(self, text):
+        """Extract IMEI numbers from message text.
+        IMEIs are 15-digit numbers starting with 35 or 01.
+        Also handles space/dash separated formats like '357 612 117 960 162'."""
+        import re as _re
+        imeis = set()
+        
+        # Clean the text: remove common separators that split IMEIs
+        # but keep digit sequences intact
+        # Pattern 1: Standard 15-digit IMEI (starts with 35 or 01)
+        # Match continuous 15-digit sequences
+        for match in _re.finditer(r'\b((?:35|01)\d{13})\b', text):
+            imeis.add(match.group(1))
+        
+        # Pattern 2: Space/dash separated IMEIs like "357 612 117 960 162"
+        # or "357-612-117-960-162" — strip separators and check if 15 digits
+        for match in _re.finditer(r'\b((?:35|01)[\d\s\-]{14,30})', text):
+            cleaned = _re.sub(r'[\s\-]', '', match.group(1))
+            if len(cleaned) == 15 and cleaned.isdigit():
+                imeis.add(cleaned)
+        
+        # Pattern 3: Any 15-digit number (catches IMEIs that don't start with 35/01)
+        for match in _re.finditer(r'\b(\d{15})\b', text):
+            imeis.add(match.group(1))
+        
+        return list(imeis)
 
     def _extract_imeis_from_image(self, img_path):
         try:
