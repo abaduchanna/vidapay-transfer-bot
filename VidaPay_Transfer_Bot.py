@@ -2630,14 +2630,57 @@ class WhatsAppScraper:
 
                     self.log(f"Trigger word matched in message: {msg.text[:80]}...")
 
-                    # Look for a store name in the message
+                    # Look for a store name in the message using smart matching.
+                    # Rules:
+                    #   1. Word-boundary match: "colfax" matches "transfer to colfax"
+                    #      but NOT "new colfax" (the "new" prefix is checked).
+                    #   2. Full store name match: "colfax store" in the message
+                    #      is preferred over a partial "colfax" match.
+                    #   3. Store aliases: "old colfax" = "colfax", "tidwell" =
+                    #      "old tidwell" (but NOT "new tidwell").
+                    #   4. Longest match wins: if both "colfax" and "colfax store"
+                    #      match, the longer one ("colfax store") is used.
                     target_account = None
                     target_store = None
+                    best_match_len = 0
+
                     for store_name, acc_id in mappings.items():
-                        if store_name.lower() in text_content:
+                        sn = store_name.lower()
+                        is_match = False
+
+                        # Strategy A: Full store name in message (best match)
+                        if sn in text_content:
+                            is_match = True
+
+                        # Strategy B: Store name with "store" suffix stripped
+                        # e.g. "colfax store" → try matching "colfax" as a word
+                        if not is_match and sn.endswith(" store"):
+                            short = sn[:-6].strip()  # "colfax"
+                            # Use word-boundary regex: match "colfax" but NOT "new colfax"
+                            # \b matches word boundary, (?<!\bnew\s) rejects "new colfax"
+                            import re as _re
+                            # Match "colfax" as a standalone word, but reject if preceded by "new"
+                            pattern = r'(?<!\bnew\s)\b' + _re.escape(short) + r'\b'
+                            if _re.search(pattern, text_content):
+                                is_match = True
+                            # Also accept "old colfax" as an alias for "colfax"
+                            if not is_match and ("old " + short) in text_content:
+                                is_match = True
+
+                        # Strategy C: Short store name without "store" suffix
+                        # For stores like "tidwell store" → also match "tidwell"
+                        # but NOT "new tidwell"
+                        if not is_match and " store" not in sn:
+                            # Store name doesn't have "store" in it — try word match
+                            import re as _re
+                            pattern = r'(?<!\bnew\s)\b' + _re.escape(sn) + r'\b'
+                            if _re.search(pattern, text_content):
+                                is_match = True
+
+                        if is_match and len(sn) > best_match_len:
+                            best_match_len = len(sn)
                             target_account = acc_id
                             target_store = store_name
-                            break
 
                     if target_account:
                         self.log(
