@@ -167,10 +167,14 @@ PAGE_LOAD_TIMEOUT = 90
 # "Wait for reply" feature: when a transfer request is detected, the bot
 # waits this many seconds before processing it.  During the wait it re-scans
 # the WhatsApp group for handling replies ("on it", "doing", etc.).  If a
-# reply is found, the transfer is SKIPPED.
-WAIT_FOR_REPLY_SECONDS = 90
+# reply is found, the transfer is SKIPPED.  If NO reply is found by the end
+# of the wait, the bot posts "on it" in the group itself and then processes
+# the transfer.
+WAIT_FOR_REPLY_SECONDS = 30
 # Re-check interval during the wait period.
-REPLY_CHECK_INTERVAL_SECONDS = 30
+REPLY_CHECK_INTERVAL_SECONDS = 15
+# The message the bot sends to claim a transfer when no human has replied.
+BOT_CLAIM_REPLY = "on it"
 
 # Human-verification wait: Cloudflare Turnstile / reCAPTCHA auto-solver loop
 # polls every few seconds; 30 s is the upper bound before giving up.
@@ -3673,11 +3677,12 @@ class WhatsAppScraper:
     # "Wait for reply" feature
     # ------------------------------------------------------------------
     # When a transfer request is detected, the bot does NOT process it
-    # immediately.  Instead it waits WAIT_FOR_REPLY_SECONDS (default 90s)
+    # immediately.  Instead it waits WAIT_FOR_REPLY_SECONDS (default 30s)
     # and re-scans the group for replies that look like someone is
     # already handling the transfer ("on it", "doing", "will do", etc.).
     # If such a reply is found, the transfer is SKIPPED.
-    # If no reply is found within the timeout, the transfer is processed.
+    # If no reply is found within the timeout, the bot posts "on it" in
+    # the group to claim the transfer and then processes it.
 
     # Phrases that indicate someone is handling the transfer manually.
     # Matched as substrings (case-insensitive) against message text.
@@ -5440,13 +5445,75 @@ class VidaPayTransferApp(tk.Tk):
                         still_pending.append(task)
                         continue
 
-                    # ── wait period elapsed → process the transfer ──
+                    # ── wait period elapsed → claim & process the transfer ──
+                    # Race-condition guard: do ONE final reply-check right
+                    # before claiming, in case someone replied between the
+                    # last periodic check and now (e.g. they typed "on it"
+                    # at second 29 but our last check was at second 15).
+                    try:
+                        final_replied, final_reply_text = (
+                            wa_scraper.check_for_reply_in_group(
+                                task["group"],
+                                task.get("trigger_text", ""),
+                            )
+                        )
+                    except Exception as final_err:
+                        self.log_msg(f"Final reply check error: {final_err}")
+                        final_replied, final_reply_text = False, ""
+
+                    if final_replied:
+                        self.log_msg(
+                            f"✋ SKIP (final check): Someone is handling the "
+                            f"transfer to {task['store']} in '{task['group']}': "
+                            f"\"{final_reply_text[:80]}\""
+                        )
+                        self.append_history(
+                            task["store"], task["account_id"],
+                            len(task["imeis"]),
+                            "SKIPPED — Someone replied (handling manually)",
+                        )
+                        # Do NOT re-add to still_pending — drop this task.
+                        continue
+
+                    # No human has replied → claim the transfer by posting
+                    # "on it" in the group, then process it.
                     self.log_msg(
                         f"\n{'='*60}\n"
-                        f"Processing (no reply received): {task['store']} "
-                        f"({len(task['imeis'])} IMEIs) from '{task['group']}'\n"
+                        f"No reply after {WAIT_FOR_REPLY_SECONDS}s — claiming "
+                        f"transfer: {task['store']} ({len(task['imeis'])} IMEIs) "
+                        f"from '{task['group']}'\n"
                         f"{'='*60}"
                     )
+
+                    if wa_scraper and wa_mode != "desktop":
+                        try:
+                            wa_scraper.send_reply(
+                                task["group"], BOT_CLAIM_REPLY
+                            )
+                            self.log_msg(
+                                f"Sent claim reply \"{BOT_CLAIM_REPLY}\" to "
+                                f"'{task['group']}'."
+                            )
+                            time.sleep(2)
+                            # Switch back to CRM tab for the upcoming
+                            # navigate_to_transfer_tool() call.
+                            try:
+                                if (
+                                    getattr(crm_system, "main_window", None)
+                                    and crm_system.main_window
+                                    in crm_system.driver.window_handles
+                                ):
+                                    crm_system.driver.switch_to.window(
+                                        crm_system.main_window
+                                    )
+                            except Exception:
+                                pass
+                        except Exception as claim_err:
+                            self.log_msg(
+                                f"Could not send claim reply: {claim_err}. "
+                                f"Proceeding with transfer anyway."
+                            )
+
                     self._process_one_task(
                         task, crm_system, wa_scraper, wa_mode
                     )
