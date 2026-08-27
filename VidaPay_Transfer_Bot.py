@@ -2674,7 +2674,71 @@ class WhatsAppScraper:
             pass
         return False
 
-    def find_and_read_groups(self, mappings, trigger_words_str=""):
+    def check_group_notifications(self):
+        """Check WhatsApp Web for groups with unread message badges.
+        Returns a list of group names that have new (unread) messages.
+        Uses JavaScript to find notification badges in the chat list."""
+        try:
+            self._focus_wa_window()
+            time.sleep(0.5)
+
+            # JavaScript to find all chat list items with unread badges
+            unread_groups = self.driver.execute_script("""
+                // WhatsApp shows unread count as a badge (green circle with number)
+                // Find all elements that look like unread badges
+                const badges = document.querySelectorAll(
+                    'span[class*="badge"], '
+                  + 'span[class*="unread"], '
+                  + 'div[class*="unread"], '
+                  + 'span[aria-label*="unread"], '
+                  + 'span[aria-label*="message"], '
+                  + '[data-testid="unread-count"], '
+                  + 'div[class*="notification"], '
+                  + 'span[class*="count"]'
+                );
+
+                const groupsWithUnread = [];
+
+                for (const badge of badges) {
+                    // Check if the badge is visible and has content (a number)
+                    if (badge.offsetWidth === 0 || badge.offsetHeight === 0) continue;
+                    const text = badge.textContent || badge.getAttribute('aria-label') || '';
+                    if (!text.trim()) continue;
+
+                    // Walk up to find the parent chat list item and get the group name
+                    let parent = badge.parentElement;
+                    let group_name = '';
+                    for (let i = 0; i < 10 && parent; i++) {
+                        // Try to find the group name (usually in a span with title or aria-label)
+                        const nameEl = parent.querySelector(
+                            'span[title], span[aria-label], '
+                          + 'div[title], div[aria-label], '
+                          + '*[data-testid="conversation-info"]'
+                        );
+                        if (nameEl) {
+                            group_name = nameEl.getAttribute('title')
+                                || nameEl.getAttribute('aria-label')
+                                || nameEl.textContent || '';
+                            if (group_name.trim()) break;
+                        }
+                        parent = parent.parentElement;
+                    }
+
+                    if (group_name.trim()) {
+                        groupsWithUnread.push(group_name.trim());
+                    }
+                }
+
+                // Deduplicate
+                return [...new Set(groupsWithUnread)];
+            """)
+
+            return unread_groups or []
+        except Exception as e:
+            self.log(f"Notification check error: {e}")
+            return []
+
+    def find_and_read_groups(self, mappings, trigger_words_str="", only_unread=False):
         transfer_tasks = []
 
         # Parse trigger words/sentences (comma-separated, case-insensitive)
@@ -2687,9 +2751,27 @@ class WhatsAppScraper:
         # Make sure the WhatsApp tab is the active one before scraping
         self._focus_wa_window()
 
+        # If only_unread mode, check which groups have new messages
+        unread_groups = []
+        if only_unread:
+            unread_groups = self.check_group_notifications()
+            if unread_groups:
+                self.log(f"Groups with unread messages: {unread_groups}")
+            else:
+                self.log("No groups with unread messages.")
+
         for group_name in self.groups:
             if self.stop_event.is_set():
                 break
+
+            # Skip groups that don't have unread messages (only_unread mode)
+            if only_unread:
+                has_unread = any(
+                    group_name.lower() in ug.lower() or ug.lower() in group_name.lower()
+                    for ug in unread_groups
+                )
+                if not has_unread:
+                    continue
 
             self.log(f"Searching for group: '{group_name}'")
             try:
@@ -4518,9 +4600,9 @@ class VidaPayTransferApp(tk.Tk):
             # After processing all initial tasks, keep monitoring for new
             # transfer requests. The bot checks all groups every 30 seconds
             # and processes any new transfers it finds.
-            MONITOR_INTERVAL = 30  # seconds between checks
+            MONITOR_INTERVAL = 10  # seconds between checks
             self.log_msg(
-                f"Entering continuous monitoring mode — checking every {MONITOR_INTERVAL}s. "
+                f"Entering continuous monitoring mode — checking notifications every {MONITOR_INTERVAL}s. "
                 f"Click Stop to exit."
             )
 
@@ -4529,11 +4611,13 @@ class VidaPayTransferApp(tk.Tk):
                 if self.stop_event.is_set():
                     break
 
-                self.log_msg("\n--- Monitoring: checking for new transfer requests ---")
+                self.log_msg("\n--- Monitoring: checking for unread messages ---")
 
-                # Switch to WhatsApp tab and scan for new messages
+                # Switch to WhatsApp tab and scan ONLY groups with unread messages
                 if wa_scraper and wa_mode != "desktop":
-                    new_tasks = wa_scraper.find_and_read_groups(self.mappings, trigger_words_str)
+                    new_tasks = wa_scraper.find_and_read_groups(
+                        self.mappings, trigger_words_str, only_unread=True
+                    )
                     self.log_msg(
                         f"Monitoring: {len(new_tasks)} new transfer request(s) found."
                     )
