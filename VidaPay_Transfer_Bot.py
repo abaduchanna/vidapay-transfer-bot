@@ -2041,57 +2041,92 @@ class VidapayTransferSystem:
                 # step.  This avoids the GetHandleVerifier crash that
                 # driver.get() triggers on tabs with SPA state.
                 before_handles = set(self.driver.window_handles)
+                new_tab_handle = None
                 try:
                     self.driver.execute_script(
                         f"window.open('{TARGET_URL}', '_blank');"
                     )
                     self.log("Opened new tab via window.open() with VidaPay URL.")
-                    time.sleep(3)  # give the new tab time to load
+                    # Poll for the new tab handle to appear — it can take
+                    # 1-5 seconds to register in attached Edge mode.
+                    for _ in range(10):
+                        time.sleep(0.5)
+                        after_handles = set(self.driver.window_handles)
+                        new_handles = after_handles - before_handles
+                        if new_handles:
+                            new_tab_handle = new_handles.pop()
+                            break
+                    if new_tab_handle:
+                        self.log(f"New tab handle detected: {new_tab_handle[:12]}...")
+                    else:
+                        self.log(
+                            "window.open() did not create a detectable new tab "
+                            "after 5s. Falling back to switch_to.new_window()."
+                        )
                 except Exception as open_err:
-                    # If window.open() is blocked by a popup blocker, fall
-                    # back to switch_to.new_window + driver.get().
                     self.log(
                         f"window.open() failed ({open_err}); "
                         f"trying switch_to.new_window() fallback."
                     )
+
+                # ── Step 2: Switch to the new tab ──
+                if new_tab_handle:
                     try:
+                        self.driver.switch_to.window(new_tab_handle)
+                        self.log("Switched to new CRM tab.")
+                    except Exception as switch_err:
+                        self.log(
+                            f"Could not switch to new tab ({switch_err}); "
+                            f"trying new_window fallback."
+                        )
+                        new_tab_handle = None  # force fallback below
+
+                if not new_tab_handle:
+                    # Fallback: use switch_to.new_window() + driver.get()
+                    # This MAY trigger the GetHandleVerifier crash on some
+                    # Edge builds, but it's better than switching to the
+                    # wrong tab (the login page) which definitely crashes.
+                    try:
+                        before_handles = set(self.driver.window_handles)
                         self.driver.switch_to.new_window("tab")
                         time.sleep(1)
-                        self.driver.get(TARGET_URL)
+                        # Find the new tab
+                        after_handles = set(self.driver.window_handles)
+                        new_handles = after_handles - before_handles
+                        if new_handles:
+                            self.driver.switch_to.window(new_handles.pop())
+                            self.log("Switched to new tab via new_window().")
+                        # Navigate via JS (avoids driver.get() crash)
+                        self.driver.execute_script(
+                            f"window.location.href = '{TARGET_URL}';"
+                        )
                         time.sleep(3)
-                    except Exception as fallback_err:
-                        raise fallback_err
-
-                # ── Step 2: Switch to the newly-created tab ──
-                after_handles = set(self.driver.window_handles)
-                new_handles = after_handles - before_handles
-                if new_handles:
-                    # Switch to the first new handle
-                    new_handle = next(iter(new_handles))
-                    self.driver.switch_to.window(new_handle)
-                    self.log(f"Switched to new CRM tab.")
-                else:
-                    # No new tab was created — we might be on an existing
-                    # tab.  Try to find a tab that's already showing the
-                    # VidaPay URL, or fall back to the main window.
-                    self.log(
-                        "No new tab detected after window.open(); "
-                        "trying to switch to an existing VidaPay tab."
-                    )
-                    found_vidapay = False
-                    for h in self.driver.window_handles:
-                        try:
-                            self.driver.switch_to.window(h)
-                            if "vidapaycrm.com" in (self.driver.current_url or ""):
-                                found_vidapay = True
-                                break
-                        except Exception:
-                            continue
-                    if not found_vidapay:
-                        self._focus_main_window()
+                    except Exception as nw_err:
+                        self.log(f"new_window fallback failed: {nw_err}")
+                        raise
 
                 # Dismiss any alert that may have popped up during navigation.
                 self._dismiss_pending_alerts()
+
+                # ── Step 3: Verify we're on the right page ──
+                # Wait for the VidaPay page to fully load and verify the
+                # Account input is present.  If not, we're on the wrong tab
+                # (e.g. the login page) — bail out and retry.
+                try:
+                    current_url = self.driver.current_url or ""
+                except Exception:
+                    current_url = ""
+
+                if "vidapaycrm.com" not in current_url.lower():
+                    self.log(
+                        f"⚠️ Wrong page after navigation: '{current_url[:80]}'. "
+                        f"Expected VidaPay CRM. Retrying."
+                    )
+                    raise Exception(
+                        f"Navigation landed on wrong page: {current_url[:100]}"
+                    )
+
+                self.log(f"Current URL: {current_url[:80]}")
 
                 # ── Step 3: Wait for the VidaPay page to fully load ──
                 # Use WebDriverWait instead of a fixed sleep so we don't
@@ -3409,8 +3444,29 @@ class WhatsAppScraper:
 
                     text_content = msg.text.lower()
 
-                    # Check if ANY trigger word/sentence is in the message
-                    triggered = any(tw in text_content for tw in trigger_words)
+                    # Check if ANY trigger word/sentence is in the message.
+                    # Use word-boundary matching for short trigger words like
+                    # 't to' to avoid false matches inside other words.
+                    # 'transfer to' and 'trf to' are long enough to be safe
+                    # as substrings, but 't to' can match inside phrases
+                    # like '...what to do' which is NOT a transfer request.
+                    import re as _re_trigger
+                    triggered = False
+                    for tw in trigger_words:
+                        if len(tw) <= 5:
+                            # Short trigger: require word boundaries on both sides
+                            # to avoid matching inside other words.
+                            if _re_trigger.search(
+                                r'\b' + _re_trigger.escape(tw) + r'\b',
+                                text_content
+                            ):
+                                triggered = True
+                                break
+                        else:
+                            # Long trigger: substring match is fine
+                            if tw in text_content:
+                                triggered = True
+                                break
                     if not triggered:
                         continue
 
@@ -5485,9 +5541,21 @@ class VidaPayTransferApp(tk.Tk):
             # When `process_after` is reached without a reply, the task is
             # processed.
             pending_tasks = []
+            # Track recently processed/skipped tasks to avoid re-queuing the
+            # same transfer request from subsequent monitoring scans.  Each
+            # entry is a (store, imeis_tuple, timestamp) tuple.  Entries
+            # expire after 5 minutes so a genuinely new request for the same
+            # store + IMEIs can be queued later.
+            recently_processed = []
+            RECENT_TTL = 300  # 5 minutes
             for t in tasks:
                 t["process_after"] = t.get("detected_at", time.time()) + WAIT_FOR_REPLY_SECONDS
                 pending_tasks.append(t)
+                # Also add to recently_processed so the first monitoring
+                # scan doesn't re-queue the same task.
+                recently_processed.append(
+                    (t["store"], tuple(sorted(t["imeis"])), time.time())
+                )
 
             if not pending_tasks:
                 self.log_msg(
@@ -5570,6 +5638,11 @@ class VidaPayTransferApp(tk.Tk):
                                     len(task["imeis"]),
                                     "SKIPPED — Someone replied (handling manually)",
                                 )
+                                # Mark as recently processed so subsequent
+                                # monitoring scans don't re-queue it.
+                                recently_processed.append(
+                                    (task["store"], tuple(sorted(task["imeis"])), time.time())
+                                )
                                 # Do NOT add to still_pending — drop this task.
                                 continue
                         # Keep waiting.
@@ -5602,6 +5675,11 @@ class VidaPayTransferApp(tk.Tk):
                             task["store"], task["account_id"],
                             len(task["imeis"]),
                             "SKIPPED — Someone replied (handling manually)",
+                        )
+                        # Mark as recently processed so subsequent
+                        # monitoring scans don't re-queue it.
+                        recently_processed.append(
+                            (task["store"], tuple(sorted(task["imeis"])), time.time())
                         )
                         # Do NOT re-add to still_pending — drop this task.
                         continue
@@ -5648,6 +5726,13 @@ class VidaPayTransferApp(tk.Tk):
                     self._process_one_task(
                         task, crm_system, wa_scraper, wa_mode
                     )
+                    # Mark as recently processed so subsequent monitoring
+                    # scans don't re-queue the same transfer (the trigger
+                    # message may still be visible in WhatsApp for several
+                    # minutes after it's been processed).
+                    recently_processed.append(
+                        (task["store"], tuple(sorted(task["imeis"])), time.time())
+                    )
                     # Do NOT re-add to still_pending — it's processed.
 
                 pending_tasks = still_pending
@@ -5667,22 +5752,44 @@ class VidaPayTransferApp(tk.Tk):
                     )
 
                     for t in new_tasks:
-                        # De-dup: skip if a pending task for the same store
-                        # + IMEIs already exists (avoids double-processing).
+                        # Expire old entries from recently_processed
+                        now_ts = time.time()
+                        recently_processed = [
+                            (s, im, ts) for s, im, ts in recently_processed
+                            if now_ts - ts < RECENT_TTL
+                        ]
+
+                        # De-dup: skip if a pending OR recently-processed task
+                        # for the same store + IMEIs already exists.
                         is_dup = any(
                             p["store"] == t["store"]
                             and p["imeis"] == t["imeis"]
                             for p in pending_tasks
                         )
+                        if not is_dup:
+                            # Also check recently_processed (covers tasks that
+                            # were already processed or skipped in the last
+                            # 5 minutes — prevents re-queuing the same transfer
+                            # from subsequent monitoring scans while the
+                            # trigger message is still visible in WhatsApp).
+                            t_imeis = tuple(sorted(t["imeis"]))
+                            is_dup = any(
+                                s == t["store"] and im == t_imeis
+                                for s, im, _ in recently_processed
+                            )
                         if is_dup:
                             self.log_msg(
                                 f"  Skipping duplicate request for "
-                                f"{t['store']} (already pending)."
+                                f"{t['store']} (already pending or recently "
+                                f"processed)."
                             )
                             continue
                         t["process_after"] = time.time() + WAIT_FOR_REPLY_SECONDS
                         t["detected_at"] = time.time()
                         pending_tasks.append(t)
+                        recently_processed.append(
+                            (t["store"], tuple(sorted(t["imeis"])), time.time())
+                        )
                         self.log_msg(
                             f"  Queued: {t['store']} ({len(t['imeis'])} IMEIs) "
                             f"from '{t['group']}' — will process in "
