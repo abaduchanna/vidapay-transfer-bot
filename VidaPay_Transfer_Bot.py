@@ -3,6 +3,7 @@
 
 import os
 import re
+import csv
 import time
 import json
 import queue
@@ -1935,6 +1936,27 @@ class VidapayTransferSystem:
             return False
 
     def execute_transfer(self, target_account_id, imeis):
+        """Transfer IMEIs to the given VidaPay account.
+
+        Flow:
+            1. Fill the target Account ID.
+            2. If more than 2 IMEIs are supplied, attempt a CSV bulk upload.
+               If it succeeds, skip the one-by-one entry loop.
+            3. Otherwise (or if CSV upload failed), enter each IMEI one-by-one
+               with per-IMEI error checking (Invalid Sim dialog → screenshot,
+               log, remove errored row, continue).
+            4. Click Next (force-removing the disabled attribute first).
+            5. Click Submit.
+            6. Navigate back to the Main Panel.
+
+        Returns:
+            True if the transfer was submitted (including partial success
+            when some IMEIs failed but at least one succeeded), False if the
+            whole transfer failed (no IMEIs added, navigation error, etc.).
+
+        Per-IMEI error screenshots / messages are collected on
+        ``self._error_screenshots`` for later WhatsApp reporting.
+        """
         if not imeis:
             self.log("No IMEIs to transfer. Skipping.")
             return False
@@ -1943,6 +1965,11 @@ class VidapayTransferSystem:
             f"Initiating transfer to Account ID: {target_account_id} "
             f"for {len(imeis)} devices."
         )
+
+        # Make sure the error-screenshot buffer exists (even if this run has
+        # no errors) so callers can safely inspect ``self._error_screenshots``.
+        if not hasattr(self, "_error_screenshots"):
+            self._error_screenshots = []
 
         try:
             # 1. Enter Target Account ID
@@ -1957,61 +1984,355 @@ class VidapayTransferSystem:
             account_input.send_keys(Keys.ENTER)
             time.sleep(3)
 
-            # 2. Enter IMEIs
-            sim_input = self.driver.find_element(By.ID, "MainContent_txtSimEntry")
-            add_btn = self.driver.find_element(By.ID, "MainContent_btnAddSimEntry")
+            # 2. Bulk IMEIs (>2) → CSV upload path.  Falls back silently to
+            #    one-by-one entry below if the upload element is missing or
+            #    the upload button click fails.
+            csv_uploaded = False
+            if len(imeis) > 2:
+                csv_uploaded = self._upload_imeis_csv(imeis)
 
-            for imei in imeis:
-                if self.should_stop():
-                    self.log("Process stopped by user.")
-                    return False
+            # 3. One-by-one entry with per-IMEI error checking.
+            successful_imeis = []
+            failed_imeis = []
 
-                # FIX #5: Retry loop for StaleElementReferenceException
-                for _attempt in range(3):
-                    try:
-                        sim_input.clear()
-                        sim_input.send_keys(imei)
-                        time.sleep(0.5)
-                        self.driver.execute_script(
-                            "arguments[0].click();", add_btn
-                        )
-                        time.sleep(1)
-                        self.log(f"Added IMEI to batch: {imei}")
-                        break
-                    except StaleElementReferenceException:
+            if not csv_uploaded:
+                sim_input = self.driver.find_element(
+                    By.ID, "MainContent_txtSimEntry"
+                )
+                add_btn = self.driver.find_element(
+                    By.ID, "MainContent_btnAddSimEntry"
+                )
+
+                for imei in imeis:
+                    if self.should_stop():
+                        self.log("Process stopped by user.")
+                        return False
+
+                    # Retry loop for StaleElementReferenceException on the
+                    # sim_input / add_btn handles (page re-renders the
+                    # RadComboBox pane between clicks).
+                    added = False
+                    for _attempt in range(3):
+                        try:
+                            sim_input.clear()
+                            sim_input.send_keys(imei)
+                            time.sleep(0.5)
+                            self.driver.execute_script(
+                                "arguments[0].click();", add_btn
+                            )
+                            time.sleep(1)
+                            self.log(f"Added IMEI to batch: {imei}")
+                            added = True
+                            break
+                        except StaleElementReferenceException:
+                            self.log(
+                                f"Stale element for IMEI {imei}, "
+                                f"re-fetching..."
+                            )
+                            sim_input = self.driver.find_element(
+                                By.ID, "MainContent_txtSimEntry"
+                            )
+                            add_btn = self.driver.find_element(
+                                By.ID, "MainContent_btnAddSimEntry"
+                            )
+                            time.sleep(1)
+                    if not added:
                         self.log(
-                            f"Stale element for IMEI {imei}, re-fetching..."
+                            f"Failed to add IMEI {imei} after retries."
                         )
-                        sim_input = self.driver.find_element(
-                            By.ID, "MainContent_txtSimEntry"
-                        )
-                        add_btn = self.driver.find_element(
-                            By.ID, "MainContent_btnAddSimEntry"
-                        )
-                        time.sleep(1)
-                else:
-                    self.log(f"Failed to add IMEI {imei} after retries.")
+                        failed_imeis.append(imei)
+                        continue
+
+                    # Check for Invalid Sim error image / dialog.  If found,
+                    # the helper screenshots it, dismisses the dialog, removes
+                    # the errored row from the batch, and records the error.
+                    if self._check_and_handle_imei_error(imei):
+                        failed_imeis.append(imei)
+                    else:
+                        successful_imeis.append(imei)
+
+                # If every single IMEI errored, the batch is empty → there
+                # is nothing to submit.
+                if not successful_imeis:
+                    self.log(
+                        f"All {len(imeis)} IMEIs failed to add — aborting "
+                        f"transfer."
+                    )
                     return False
 
-            # 3. Proceed to Next
+            # 4. Proceed to Next (force-enable first — VidaPay leaves the
+            #    button disabled until the page's own JS flips it, but we've
+            #    already populated everything we need).
             next_btn = self.driver.find_element(By.ID, "MainContent_btnNext")
+            try:
+                self.driver.execute_script(
+                    "arguments[0].removeAttribute('disabled');", next_btn
+                )
+            except Exception:
+                pass
             self.driver.execute_script("arguments[0].click();", next_btn)
             time.sleep(2)
 
-            # 4. Submit Transfer
+            # 5. Submit Transfer
             submit_btn = self.wait.until(
-                EC.element_to_be_clickable((By.ID, "MainContent_submitButton"))
+                EC.element_to_be_clickable(
+                    (By.ID, "MainContent_submitButton")
+                )
             )
-            self.driver.execute_script("arguments[0].click();", submit_btn)
+            self.driver.execute_script(
+                "arguments[0].click();", submit_btn
+            )
             self.log(
                 f"Transfer submitted successfully to {target_account_id}."
             )
+
+            # 6. Navigate back to the Main Panel so the next transfer (if
+            #    any) starts from a clean slate.
             time.sleep(3)
+            self._navigate_back_to_main_panel()
+
+            # 7. Report partial-success status if some IMEIs failed.
+            if not csv_uploaded and failed_imeis:
+                self.log(
+                    f"Transfer completed with {len(failed_imeis)} failed "
+                    f"IMEI(s): {failed_imeis}"
+                )
             return True
 
         except Exception as e:
             self.log(f"Error during CRM transfer: {e}")
             return False
+
+    # ------------------------------------------------------------------
+    # execute_transfer helpers
+    # ------------------------------------------------------------------
+
+    def _upload_imeis_csv(self, imeis):
+        """Bulk-upload IMEIs via the CSV template.
+
+        Returns True if the upload succeeded and we should skip the
+        one-by-one entry loop; returns False on any failure so the caller
+        can fall back to per-IMEI entry.
+        """
+        self.log(
+            f"Bulk transfer: {len(imeis)} IMEIs — using CSV upload."
+        )
+
+        try:
+            csv_path = os.path.join(
+                tempfile.gettempdir(),
+                f"transfer_imeis_{int(time.time())}.csv",
+            )
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["SIM_ID"])
+                for imei in imeis:
+                    writer.writerow([imei])
+            self.log(f"Created CSV: {csv_path}")
+        except Exception as csv_err:
+            self.log(
+                f"CSV file creation failed: {csv_err} — falling back to "
+                f"one-by-one."
+            )
+            return False
+
+        try:
+            file_inputs = self.driver.find_elements(
+                By.CSS_SELECTOR, "input[type='file']"
+            )
+            if not file_inputs:
+                self.log(
+                    "No file input found — falling back to one-by-one "
+                    "entry."
+                )
+                return False
+
+            file_inputs[0].send_keys(csv_path)
+            time.sleep(2)
+            self.log("CSV file uploaded.")
+        except Exception as up_err:
+            self.log(
+                f"CSV upload failed: {up_err} — falling back to "
+                f"one-by-one."
+            )
+            return False
+
+        # Click Upload button (force-enable first, same pattern as Next).
+        try:
+            upload_btn = self.driver.find_element(
+                By.ID, "MainContent_btnUploadFile"
+            )
+            try:
+                self.driver.execute_script(
+                    "arguments[0].removeAttribute('disabled');", upload_btn
+                )
+            except Exception:
+                pass
+            self.driver.execute_script(
+                "arguments[0].click();", upload_btn
+            )
+            time.sleep(3)
+            self.log("Upload button clicked.")
+            return True
+        except Exception as upload_err:
+            self.log(f"Upload button error: {upload_err}")
+            return False
+
+    def _check_and_handle_imei_error(self, imei):
+        """Detect & handle the Invalid Sim error that may appear after Add.
+
+        Returns True if an error was detected and handled (the caller should
+        treat the IMEI as failed); returns False if no error was present
+        (the IMEI was added cleanly).
+        """
+        # Look for the Invalid Sim icon that VidaPay renders next to a bad
+        # row.
+        try:
+            error_img = self.driver.find_element(
+                By.CSS_SELECTOR,
+                "img[src*='Invalid%20Sim.png'], img[src*='Invalid']",
+            )
+            if not error_img:
+                return False
+        except Exception:
+            # No error image — IMEI was added successfully.
+            return False
+
+        # Click the error image to open the error dialog.
+        try:
+            self.driver.execute_script(
+                "arguments[0].click();", error_img
+            )
+        except Exception:
+            pass
+        time.sleep(1)
+
+        # Read the error text from the jQuery UI dialog.
+        error_text = "Unknown error"
+        try:
+            dialog = self.driver.find_element(By.ID, "planNameModal")
+            if dialog:
+                txt = dialog.text.strip()
+                if txt:
+                    error_text = txt
+        except Exception:
+            pass
+
+        self.log(f"❌ IMEI {imei} error: {error_text}")
+
+        # Take a screenshot of the error dialog for later reporting.
+        screenshot_path = None
+        try:
+            screenshot_path = os.path.join(
+                os.environ.get("TEMP", tempfile.gettempdir()),
+                f"transfer_error_{imei}_{int(time.time())}.png",
+            )
+            self.driver.save_screenshot(screenshot_path)
+            self.log(f"Screenshot saved: {screenshot_path}")
+        except Exception as ss_err:
+            self.log(f"Could not save screenshot: {ss_err}")
+
+        # Close the dialog.  Try the labelled Close button first, then fall
+        # back to the jQuery UI titlebar close icon.  (We use JS because the
+        # :contains() pseudo-selector in the original spec is jQuery-only
+        # and not valid CSS, so Selenium would throw on it.)
+        try:
+            self.driver.execute_script(
+                """
+                var btns = document.querySelectorAll(
+                    '.ui-dialog .ui-button, .ui-dialog button'
+                );
+                for (var i = 0; i < btns.length; i++) {
+                    var t = (btns[i].textContent || '').trim().toLowerCase();
+                    if (t.indexOf('close') >= 0) {
+                        btns[i].click();
+                        return;
+                    }
+                }
+                var tbc = document.querySelector('.ui-dialog-titlebar-close');
+                if (tbc) tbc.click();
+                """
+            )
+        except Exception:
+            # Final fallback: call jQuery directly (loaded by jQuery UI).
+            try:
+                self.driver.execute_script(
+                    "if (window.jQuery) {"
+                    " jQuery('.ui-dialog-titlebar-close').click();"
+                    "}"
+                )
+            except Exception:
+                pass
+        time.sleep(0.5)
+
+        # Remove the errored IMEI from the batch (click its row's X button).
+        try:
+            x_buttons = self.driver.find_elements(
+                By.CSS_SELECTOR,
+                "input[value='X'][onclick*='Delete'], "
+                "input[value='x'][onclick*='Delete'], "
+                "input[onclick*='Delete']",
+            )
+            if x_buttons:
+                # Click the last X button — that's the most recently added
+                # row, which is the one that just errored.
+                self.driver.execute_script(
+                    "arguments[0].click();", x_buttons[-1]
+                )
+                time.sleep(1)
+                # Handle the JavaScript confirm() dialog if the page pops one.
+                try:
+                    alert = self.driver.switch_to.alert
+                    alert.accept()
+                except Exception:
+                    pass
+                self.log(
+                    f"Removed errored IMEI {imei} from the list."
+                )
+        except Exception as del_err:
+            self.log(f"Could not remove errored IMEI: {del_err}")
+
+        # Store for later sending (e.g. WhatsApp notification).
+        self._error_screenshots.append(
+            {
+                "imei": imei,
+                "error": error_text,
+                "screenshot": screenshot_path,
+            }
+        )
+        return True
+
+    def _navigate_back_to_main_panel(self):
+        """After Submit, wait briefly and navigate back to the Main Panel."""
+        self.log("Transfer submitted. Navigating back to Main Panel...")
+        try:
+            spans = self.driver.find_elements(
+                By.CSS_SELECTOR, "span.rmText"
+            )
+            for span in spans:
+                try:
+                    txt = (span.text or "").strip()
+                except Exception:
+                    txt = ""
+                if "Main Panel" in txt:
+                    self.driver.execute_script(
+                        "arguments[0].click();", span
+                    )
+                    time.sleep(2)
+                    self.log("Navigated back to Main Panel.")
+                    return
+        except Exception:
+            pass
+
+        # Fallback: navigate directly to the Main Panel URL.
+        try:
+            self.driver.get(
+                "https://www.vidapaycrm.com/Main%20Panel.aspx"
+            )
+            time.sleep(2)
+            self.log("Navigated to Main Panel via URL.")
+        except Exception as nav_err:
+            self.log(f"Could not navigate back to Main Panel: {nav_err}")
 
 
 class WhatsAppScraper:
