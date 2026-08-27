@@ -2009,17 +2009,24 @@ class VidapayTransferSystem:
     def navigate_to_transfer_tool(self):
         self.log("Navigating to Inventory Reassignment Tool...")
 
-        # ── Why we open a FRESH tab instead of reusing the CRM tab ──────
-        # After scanning 11 WhatsApp groups, the WhatsApp Web SPA leaves
-        # the Edge browser in a state where calling driver.get() on the
-        # existing CRM tab hangs for ~35s and then crashes msedgedriver
-        # with a GetHandleVerifier stacktrace (Windows-specific).
+        # ── Why we use window.open() instead of driver.get() ────────────
+        # msedgedriver on Windows crashes with a GetHandleVerifier stacktrace
+        # when driver.get() is called on a tab that has WhatsApp Web's SPA
+        # loaded.  The crash happens in msedgedriver's handle-verification
+        # layer, NOT in our Python code — so retrying driver.get() just
+        # crashes again.
         #
-        # Opening a new tab sidesteps whatever stale state the existing
-        # tab is in.  We close the temp tab via JS (window.close()) at the
-        # end of execute_transfer — NOT via driver.close() which would
-        # kill the whole msedgedriver session.
+        # FIX: use JavaScript's window.open() to create a BRAND NEW tab
+        # AND navigate it to the VidaPay URL in one atomic step.  This
+        # bypasses both switch_to.new_window() (which can fail silently on
+        # attached Edge) and driver.get() (which triggers the crash).
+        #
+        # The new tab starts with a clean browser context — no SPA state,
+        # no onbeforeunload handlers, no stale JavaScript — so the VidaPay
+        # page loads cleanly.
         # ─────────────────────────────────────────────────────────────────
+
+        TARGET_URL = "https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
 
         # First dismiss any lingering JS alert() / confirm() dialogs.
         try:
@@ -2029,85 +2036,112 @@ class VidapayTransferSystem:
 
         for attempt in range(3):
             try:
-                # Try to open a fresh tab.  driver.switch_to.new_window("tab")
-                # is the cleanest way — it doesn't trigger a page load on the
-                # existing tabs, so WhatsApp Web's SPA state is preserved.
+                # ── Step 1: Open a new tab with the target URL via JS ──
+                # window.open() creates a new tab AND navigates it in one
+                # step.  This avoids the GetHandleVerifier crash that
+                # driver.get() triggers on tabs with SPA state.
+                before_handles = set(self.driver.window_handles)
                 try:
-                    self.driver.switch_to.new_window("tab")
-                    self.log("Opened fresh tab for CRM navigation.")
-                    time.sleep(1)
-                except Exception as new_tab_err:
-                    # If new_window fails (rare on Edge), fall back to
-                    # reusing the current tab.
-                    self.log(
-                        f"Could not open fresh tab ({new_tab_err}); "
-                        f"reusing current tab."
+                    self.driver.execute_script(
+                        f"window.open('{TARGET_URL}', '_blank');"
                     )
-                    self._focus_main_window()
-                    time.sleep(2)
+                    self.log("Opened new tab via window.open() with VidaPay URL.")
+                    time.sleep(3)  # give the new tab time to load
+                except Exception as open_err:
+                    # If window.open() is blocked by a popup blocker, fall
+                    # back to switch_to.new_window + driver.get().
+                    self.log(
+                        f"window.open() failed ({open_err}); "
+                        f"trying switch_to.new_window() fallback."
+                    )
+                    try:
+                        self.driver.switch_to.new_window("tab")
+                        time.sleep(1)
+                        self.driver.get(TARGET_URL)
+                        time.sleep(3)
+                    except Exception as fallback_err:
+                        raise fallback_err
 
-                # Dismiss any alert that may have popped up during tab switch.
+                # ── Step 2: Switch to the newly-created tab ──
+                after_handles = set(self.driver.window_handles)
+                new_handles = after_handles - before_handles
+                if new_handles:
+                    # Switch to the first new handle
+                    new_handle = next(iter(new_handles))
+                    self.driver.switch_to.window(new_handle)
+                    self.log(f"Switched to new CRM tab.")
+                else:
+                    # No new tab was created — we might be on an existing
+                    # tab.  Try to find a tab that's already showing the
+                    # VidaPay URL, or fall back to the main window.
+                    self.log(
+                        "No new tab detected after window.open(); "
+                        "trying to switch to an existing VidaPay tab."
+                    )
+                    found_vidapay = False
+                    for h in self.driver.window_handles:
+                        try:
+                            self.driver.switch_to.window(h)
+                            if "vidapaycrm.com" in (self.driver.current_url or ""):
+                                found_vidapay = True
+                                break
+                        except Exception:
+                            continue
+                    if not found_vidapay:
+                        self._focus_main_window()
+
+                # Dismiss any alert that may have popped up during navigation.
                 self._dismiss_pending_alerts()
 
-                self.driver.get(
-                    "https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
-                )
-                time.sleep(3)
-
-                # A confirm() dialog can also pop up *during* the GET (the
-                # previous page fires an onbeforeunload confirm).  Dismiss
-                # it and re-issue the GET.
+                # ── Step 3: Wait for the VidaPay page to fully load ──
+                # Use WebDriverWait instead of a fixed sleep so we don't
+                # wait longer than necessary.
                 try:
-                    self._dismiss_pending_alerts()
-                except Exception:
-                    pass
-
-                # Check if VidaPay showed an Application Error page
-                try:
-                    error_el = self.driver.find_element(By.CSS_SELECTOR, ".error-container, .error-title")
-                    if error_el and error_el.is_displayed():
-                        self.log("⚠️ VidaPay Application Error detected. Navigating to Main Panel...")
-                        # Click Main Panel link
-                        try:
-                            main_panel = self.driver.find_element(
-                                By.CSS_SELECTOR, "span.rmText"
-                            )
-                            if "main panel" in (main_panel.text or "").lower():
-                                self.driver.execute_script("arguments[0].click();", main_panel)
-                                self.log("Clicked Main Panel link.")
-                            else:
-                                self.driver.get("https://www.vidapaycrm.com/Main%20Panel.aspx")
-                                self.log("Navigated to Main Panel via URL.")
-                            time.sleep(3)
-                            self._dismiss_pending_alerts()
-                            # Now try navigating to the Transfer Tool again
-                            self.driver.get(
-                                "https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
-                            )
-                            time.sleep(3)
-                            self._dismiss_pending_alerts()
-                        except Exception:
-                            self.driver.get("https://www.vidapaycrm.com/Main%20Panel.aspx")
-                            time.sleep(3)
-                            self._dismiss_pending_alerts()
-                            self.driver.get(
-                                "https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
-                            )
-                            time.sleep(3)
-                            self._dismiss_pending_alerts()
-                except Exception:
-                    pass  # No error page — continue normally
-
-                self.wait.until(
-                    EC.presence_of_element_located(
-                        (By.ID, "ctl00_MainContent_rcbAccount_Input")
+                    self.wait.until(
+                        EC.presence_of_element_located(
+                            (By.ID, "ctl00_MainContent_rcbAccount_Input")
+                        )
                     )
-                )
-                time.sleep(2)
+                except Exception:
+                    # If the Account input isn't found, we might be on an
+                    # Application Error page.  Check for that and recover.
+                    try:
+                        error_el = self.driver.find_element(
+                            By.CSS_SELECTOR, ".error-container, .error-title"
+                        )
+                        if error_el and error_el.is_displayed():
+                            self.log(
+                                "⚠️ VidaPay Application Error detected. "
+                                "Navigating to Main Panel via JS..."
+                            )
+                            self.driver.execute_script(
+                                "window.location.href = "
+                                "'https://www.vidapaycrm.com/Main%20Panel.aspx';"
+                            )
+                            time.sleep(3)
+                            self._dismiss_pending_alerts()
+                            # Now navigate to the Transfer Tool via JS
+                            self.driver.execute_script(
+                                f"window.location.href = '{TARGET_URL}';"
+                            )
+                            time.sleep(3)
+                            self._dismiss_pending_alerts()
+                            # Wait again for the Account input
+                            self.wait.until(
+                                EC.presence_of_element_located(
+                                    (By.ID, "ctl00_MainContent_rcbAccount_Input")
+                                )
+                            )
+                    except Exception:
+                        pass  # No error page — re-raise the original timeout
+
+                time.sleep(1)
                 # Remember this tab so _navigate_back_to_main_panel can
                 # close it via JS when the transfer is done.
                 self._crm_tab_handle = self.driver.current_window_handle
+                self.log("VidaPay Reassignment Tool ready.")
                 return True
+
             except Exception as e:
                 err_str = str(e)[:200]
                 self.log(f"Navigation attempt {attempt+1}/3 failed: {err_str}")
@@ -2127,9 +2161,6 @@ class VidapayTransferSystem:
                         self.main_window = self.driver.current_window_handle
                         self.log("Re-attached to Edge browser.")
                         time.sleep(2)
-                        # Dismiss any alert that may have survived the
-                        # re-attach (rare, but possible if the page is
-                        # still mid-dialog).
                         self._dismiss_pending_alerts()
                     except Exception as re_err:
                         self.log(f"Re-attach failed: {re_err}")
@@ -3771,11 +3802,41 @@ class WhatsAppScraper:
                     break
 
             if trigger_idx < 0:
-                # Trigger message not found in the current view — it may
-                # have scrolled off.  Assume no reply (safer than skipping).
+                # ── Trigger message scrolled off WhatsApp's virtualized DOM ──
+                # WhatsApp Web only keeps ~20-30 messages in the DOM at a time.
+                # After 15-30 seconds, if new messages arrive, the trigger
+                # message gets unmounted and we can't find it anymore.
+                #
+                # OLD (BROKEN) BEHAVIOR: return "no reply" → bot posts "on it"
+                # and processes the transfer even if someone DID reply.
+                #
+                # NEW BEHAVIOR: scan ALL visible messages for handling phrases.
+                # If anyone said "on it" / "doing" / etc. in the current view,
+                # assume they're handling it and SKIP.  This is the safe choice
+                # — better to skip a valid transfer than to double-handle one.
                 self.log(
-                    f"  [reply-check] Trigger message not in current view "
-                    f"of '{group_name}'. Assuming no reply."
+                    f"  [reply-check] Trigger not in current view of "
+                    f"'{group_name}' (scrolled off). Scanning ALL visible "
+                    f"messages for handling phrases..."
+                )
+                for msg in messages:
+                    text_lower = msg["text"].lower()
+                    for phrase in self.REPLY_HANDLING_PHRASES:
+                        if phrase in text_lower:
+                            self.log(
+                                f"  [reply-check] Handling reply found in "
+                                f"'{group_name}': \"{msg['text'][:80]}\" "
+                                f"(matched: '{phrase}')"
+                            )
+                            try:
+                                search_box.send_keys(Keys.ESCAPE)
+                            except Exception:
+                                pass
+                            return True, msg["text"]
+
+                self.log(
+                    f"  [reply-check] No handling reply in any of the "
+                    f"{len(messages)} visible messages."
                 )
                 try:
                     search_box.send_keys(Keys.ESCAPE)
