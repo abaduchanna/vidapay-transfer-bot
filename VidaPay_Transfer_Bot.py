@@ -2357,7 +2357,20 @@ class VidapayTransferSystem:
             return True
 
         except Exception as e:
-            self.log(f"Error during CRM transfer: {e}")
+            err_str = str(e)[:300]
+            self.log(f"Error during CRM transfer: {err_str}")
+            # Store the actual error so _process_one_task can report it
+            # accurately instead of the misleading "store may be LOCKED"
+            # message (which is only true when the account ID is not found
+            # in the dropdown — not when the page failed to load or the
+            # input element couldn't be located).
+            if not hasattr(self, "_error_screenshots"):
+                self._error_screenshots = []
+            self._error_screenshots.append({
+                "imei": "N/A",
+                "error": f"CRM error: {err_str}",
+                "screenshot": None,
+            })
             return False
 
     # ------------------------------------------------------------------
@@ -3749,12 +3762,21 @@ class WhatsAppScraper:
         whether anyone has replied with a handling phrase like "on it" or
         "doing".
 
+        Uses JavaScript innerText extraction instead of BS4 — simpler and
+        more reliable.  BS4 was failing because:
+          1. div[data-id] selector picks up sidebar chat list items too
+          2. Quoted replies confuse trigger-text position detection (the
+             trigger snippet appears in BOTH the original message AND
+             inside the quoted reply)
+          3. WhatsApp's obfuscated DOM breaks BS4 parsing frequently
+
+        The JS approach gets the exact text the user sees, in order.
+
         Args:
             group_name: WhatsApp group to scan.
-            trigger_text_snippet: A short substring (first ~30 chars) of
-                the original trigger message.  Used to find the trigger
-                in the re-scanned message list and only look at messages
-                AFTER it.
+            trigger_text_snippet: A short substring of the original trigger
+                message.  Used to find where the trigger ends so we only
+                look at text AFTER it.
 
         Returns:
             (True, reply_text) if a handling reply was found,
@@ -3769,6 +3791,7 @@ class WhatsAppScraper:
 
             search_box = self._find_search_box()
             if not search_box:
+                self.log("  [reply-check] No search box found.")
                 return False, ""
 
             # Search for the group
@@ -3782,88 +3805,135 @@ class WhatsAppScraper:
             search_box.send_keys(Keys.ENTER)
             time.sleep(3)
 
-            # Use BS4 to extract messages (fast).
-            messages = self._extract_messages_bs4()
-            if not messages:
-                self.log(f"  [reply-check] No messages found in '{group_name}'.")
-                # Clear search
-                try:
-                    search_box.send_keys(Keys.ESCAPE)
-                except Exception:
-                    pass
-                return False, ""
+            # ── Extract ALL visible chat text via JavaScript innerText ──
+            # This is much more reliable than BS4 parsing.  We get the
+            # exact text the user sees, in order, including quoted replies.
+            chat_text = ""
+            try:
+                chat_text = self.driver.execute_script("""
+                    // Try multiple selectors for the chat message panel.
+                    // WhatsApp Web changes these frequently.
+                    var selectors = [
+                        '[data-testid="conversation-panel-messages"]',
+                        'div[class*="message-list"]',
+                        'div[class*="chat-body"]',
+                        'div[role="application"] div[role="list"]',
+                        'main div[role="application"] div:last-of-type'
+                    ];
+                    for (var i = 0; i < selectors.length; i++) {
+                        var el = document.querySelector(selectors[i]);
+                        if (el && el.innerText && el.innerText.length > 10) {
+                            return el.innerText;
+                        }
+                    }
+                    // Fallback: get the main panel's text
+                    var main = document.querySelector('main');
+                    if (main && main.innerText) {
+                        return main.innerText;
+                    }
+                    return "";
+                """)
+            except Exception as js_err:
+                self.log(f"  [reply-check] JS text extraction failed: {js_err}")
+                chat_text = ""
 
-            # Find the trigger message's position in the list.
-            trigger_snippet_lower = trigger_text_snippet.lower().strip()
-            trigger_idx = -1
-            for i, msg in enumerate(messages):
-                if trigger_snippet_lower in msg["text"].lower():
-                    trigger_idx = i
-                    break
-
-            if trigger_idx < 0:
-                # ── Trigger message scrolled off WhatsApp's virtualized DOM ──
-                # WhatsApp Web only keeps ~20-30 messages in the DOM at a time.
-                # After 15-30 seconds, if new messages arrive, the trigger
-                # message gets unmounted and we can't find it anymore.
-                #
-                # OLD (BROKEN) BEHAVIOR: return "no reply" → bot posts "on it"
-                # and processes the transfer even if someone DID reply.
-                #
-                # NEW BEHAVIOR: scan ALL visible messages for handling phrases.
-                # If anyone said "on it" / "doing" / etc. in the current view,
-                # assume they're handling it and SKIP.  This is the safe choice
-                # — better to skip a valid transfer than to double-handle one.
+            if not chat_text or len(chat_text) < 10:
                 self.log(
-                    f"  [reply-check] Trigger not in current view of "
-                    f"'{group_name}' (scrolled off). Scanning ALL visible "
-                    f"messages for handling phrases..."
-                )
-                for msg in messages:
-                    text_lower = msg["text"].lower()
-                    for phrase in self.REPLY_HANDLING_PHRASES:
-                        if phrase in text_lower:
-                            self.log(
-                                f"  [reply-check] Handling reply found in "
-                                f"'{group_name}': \"{msg['text'][:80]}\" "
-                                f"(matched: '{phrase}')"
-                            )
-                            try:
-                                search_box.send_keys(Keys.ESCAPE)
-                            except Exception:
-                                pass
-                            return True, msg["text"]
-
-                self.log(
-                    f"  [reply-check] No handling reply in any of the "
-                    f"{len(messages)} visible messages."
+                    f"  [reply-check] No chat text found in '{group_name}'."
                 )
                 try:
                     search_box.send_keys(Keys.ESCAPE)
                 except Exception:
                     pass
                 return False, ""
-
-            # Check messages AFTER the trigger for handling phrases.
-            for msg in messages[trigger_idx + 1:]:
-                text_lower = msg["text"].lower()
-                for phrase in self.REPLY_HANDLING_PHRASES:
-                    if phrase in text_lower:
-                        # Found a handling reply — skip this transfer.
-                        self.log(
-                            f"  [reply-check] Handling reply detected in "
-                            f"'{group_name}': \"{msg['text'][:80]}\" "
-                            f"(matched: '{phrase}')"
-                        )
-                        try:
-                            search_box.send_keys(Keys.ESCAPE)
-                        except Exception:
-                            pass
-                        return True, msg["text"]
 
             self.log(
-                f"  [reply-check] No handling reply in '{group_name}' "
-                f"(checked {len(messages) - trigger_idx - 1} messages after trigger)."
+                f"  [reply-check] Got {len(chat_text)} chars of chat text "
+                f"from '{group_name}'."
+            )
+
+            # ── Find the trigger message in the chat text ──
+            # The trigger_text_snippet includes the full message text (sender
+            # name + phone + body + timestamp).  We only need the KEY part —
+            # the transfer keyword + store name.  Extract it by looking for
+            # common trigger phrases in the snippet.
+            chat_lower = chat_text.lower()
+            snippet_lower = trigger_text_snippet.lower()
+
+            # Try to extract just the "transfer to <store>" or "t to <store>"
+            # part from the snippet — this is more reliable than using the
+            # full snippet (which includes sender name + phone number that
+            # may not match exactly in the re-scanned text).
+            import re as _re
+            trigger_key = ""
+            for pattern in [
+                r'(transfer to \S+)',
+                r'(t to \S+)',
+                r'(trf to \S+)',
+                r'(tt\. t t \S+)',
+            ]:
+                m = _re.search(pattern, snippet_lower)
+                if m:
+                    trigger_key = m.group(1)
+                    break
+
+            if trigger_key:
+                self.log(
+                    f"  [reply-check] Looking for trigger key: "
+                    f"'{trigger_key}' in chat text."
+                )
+                # Use the LAST occurrence in case the trigger text also
+                # appears in a quoted reply above the actual trigger.
+                trigger_pos = chat_lower.rfind(trigger_key)
+            else:
+                # Fallback: use the first 30 chars of the snippet
+                trigger_key = snippet_lower.strip()[:30]
+                trigger_pos = chat_lower.rfind(trigger_key)
+
+            if trigger_pos < 0:
+                # Trigger not found — it may have scrolled off.
+                # Scan ALL text for handling phrases (safe choice).
+                self.log(
+                    f"  [reply-check] Trigger not found in chat text. "
+                    f"Scanning ALL text for handling phrases..."
+                )
+                text_to_check = chat_lower
+            else:
+                # Only check text AFTER the trigger message.
+                text_to_check = chat_lower[trigger_pos + len(trigger_key):]
+                self.log(
+                    f"  [reply-check] Trigger found at char {trigger_pos}. "
+                    f"Checking {len(text_to_check)} chars after trigger."
+                )
+
+            # ── Check for handling phrases in the relevant text ──
+            for phrase in self.REPLY_HANDLING_PHRASES:
+                if phrase in text_to_check:
+                    # Found a handling reply — skip this transfer.
+                    # Try to extract the reply text for logging.
+                    phrase_pos = text_to_check.find(phrase)
+                    # Get a window of text around the match for context
+                    start = max(0, phrase_pos - 20)
+                    end = min(len(text_to_check), phrase_pos + len(phrase) + 40)
+                    if trigger_pos >= 0:
+                        offset = trigger_pos + len(trigger_key)
+                        reply_excerpt = chat_text[offset + start : offset + end].strip()
+                    else:
+                        reply_excerpt = chat_text[start:end].strip()
+                    self.log(
+                        f"  [reply-check] ✓ Handling reply detected in "
+                        f"'{group_name}' (matched: '{phrase}'): "
+                        f"\"{reply_excerpt[:100]}\""
+                    )
+                    try:
+                        search_box.send_keys(Keys.ESCAPE)
+                    except Exception:
+                        pass
+                    return True, reply_excerpt
+
+            self.log(
+                f"  [reply-check] ✗ No handling reply found in "
+                f"'{group_name}'."
             )
             try:
                 search_box.send_keys(Keys.ESCAPE)
@@ -5255,7 +5325,7 @@ class VidaPayTransferApp(tk.Tk):
                 else:
                     reply_msg = (
                         f"❌ Transfer to {task['store']} FAILED — "
-                        f"store may be LOCKED or temporarily suspended. "
+                        f"could not interact with the VidaPay transfer page. "
                         f"Please check manually."
                     )
 
