@@ -3138,13 +3138,23 @@ class VidaPayTransferApp(tk.Tk):
                 store = str(row.iloc[0]).strip()
                 acc = str(row.iloc[1]).strip()
 
+                # Check for aliases column (3rd column, if present)
+                aliases_str = ""
+                if len(df.columns) >= 3:
+                    aliases_str = str(row.iloc[2]).strip()
+
                 if (
                     store
                     and acc
                     and store.lower() != "nan"
                     and acc.lower() != "nan"
                 ):
-                    self.mappings[store] = {"account_id": acc, "aliases": []}
+                    # Parse aliases (comma-separated)
+                    if aliases_str and aliases_str.lower() != "nan":
+                        aliases = [a.strip().lower() for a in aliases_str.split(",") if a.strip()]
+                    else:
+                        aliases = []
+                    self.mappings[store] = {"account_id": acc, "aliases": aliases}
                     imported_count += 1
 
             self.config_data["transfer_mappings"] = self.mappings
