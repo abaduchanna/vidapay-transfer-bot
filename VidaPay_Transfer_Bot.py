@@ -2685,50 +2685,86 @@ class WhatsAppScraper:
             # First, ensure WhatsApp notification settings are ON
             self._ensure_notification_settings_on()
 
-            # JavaScript to find all chat list items with unread badges
+            # JavaScript to find all chat list items with unread badges.
+            # WhatsApp's badge classes are obfuscated (x1xxx...) so we can't
+            # match by class name. Instead, we find span elements whose text
+            # content is a small number (1-99) and whose parent has a green
+            # background (the unread badge circle).
             unread_groups = self.driver.execute_script("""
-                // WhatsApp shows unread count as a badge (green circle with number)
-                // Find all elements that look like unread badges
-                const badges = document.querySelectorAll(
-                    'span[class*="badge"], '
-                  + 'span[class*="unread"], '
-                  + 'div[class*="unread"], '
-                  + 'span[aria-label*="unread"], '
-                  + 'span[aria-label*="message"], '
-                  + '[data-testid="unread-count"], '
-                  + 'div[class*="notification"], '
-                  + 'span[class*="count"]'
-                );
-
                 const groupsWithUnread = [];
 
-                for (const badge of badges) {
-                    // Check if the badge is visible and has content (a number)
-                    if (badge.offsetWidth === 0 || badge.offsetHeight === 0) continue;
-                    const text = badge.textContent || badge.getAttribute('aria-label') || '';
-                    if (!text.trim()) continue;
-
-                    // Walk up to find the parent chat list item and get the group name
-                    let parent = badge.parentElement;
-                    let group_name = '';
-                    for (let i = 0; i < 10 && parent; i++) {
-                        // Try to find the group name (usually in a span with title or aria-label)
-                        const nameEl = parent.querySelector(
-                            'span[title], span[aria-label], '
-                          + 'div[title], div[aria-label], '
-                          + '*[data-testid="conversation-info"]'
-                        );
-                        if (nameEl) {
-                            group_name = nameEl.getAttribute('title')
-                                || nameEl.getAttribute('aria-label')
-                                || nameEl.textContent || '';
-                            if (group_name.trim()) break;
+                // Strategy 1: Find spans containing small numbers inside
+                // elements with green background (the unread badge circle)
+                const allSpans = document.querySelectorAll('span');
+                for (const span of allSpans) {
+                    // Must be visible
+                    if (span.offsetWidth === 0 || span.offsetHeight === 0) continue;
+                    
+                    // Text must be a small number (1-99 = unread count)
+                    const text = span.textContent.trim();
+                    if (!text || !/^\\d{1,2}$/.test(text)) continue;
+                    
+                    // Check if this span or its parent has a green-ish background
+                    // (WhatsApp unread badges are green: #25D366 or similar)
+                    let el = span;
+                    for (let i = 0; i < 3 && el; i++) {
+                        const bg = getComputedStyle(el).backgroundColor;
+                        // Green colors: rgb(37, 211, 102) = #25D366
+                        // Also check for any non-transparent, non-white, non-dark bg
+                        if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'rgb(0, 0, 0)'
+                            && bg !== 'rgb(255, 255, 255)' && bg !== 'transparent') {
+                            // Check if it looks green (G > R and G > B)
+                            const match = bg.match(/\\d+/g);
+                            if (match && match.length >= 3) {
+                                const r = parseInt(match[0]);
+                                const g = parseInt(match[1]);
+                                const b = parseInt(match[2]);
+                                if (g > r && g > b) {
+                                    // Found a green badge! Walk up to find group name.
+                                    let parent = el.parentElement;
+                                    let group_name = '';
+                                    for (let j = 0; j < 15 && parent; j++) {
+                                        const nameEl = parent.querySelector(
+                                            'span[title], span[aria-label], '
+                                          + 'div[title], div[aria-label]'
+                                        );
+                                        if (nameEl) {
+                                            group_name = nameEl.getAttribute('title')
+                                                || nameEl.getAttribute('aria-label')
+                                                || nameEl.textContent || '';
+                                            if (group_name.trim() && group_name.length > 1) break;
+                                        }
+                                        parent = parent.parentElement;
+                                    }
+                                    if (group_name.trim()) {
+                                        groupsWithUnread.push(group_name.trim());
+                                    }
+                                    break; // Don't check more parents for this span
+                                }
+                            }
                         }
-                        parent = parent.parentElement;
+                        el = el.parentElement;
                     }
+                }
 
-                    if (group_name.trim()) {
-                        groupsWithUnread.push(group_name.trim());
+                // Strategy 2: Fallback — look for aria-label containing "unread"
+                const ariaUnread = document.querySelectorAll(
+                    '[aria-label*="unread" i], [aria-label*="message" i]'
+                );
+                for (const el of ariaUnread) {
+                    if (el.offsetWidth === 0 || el.offsetHeight === 0) continue;
+                    const label = el.getAttribute('aria-label') || '';
+                    if (label.toLowerCase().includes('unread')) {
+                        // Walk up to find group name
+                        let parent = el.parentElement;
+                        for (let j = 0; j < 10 && parent; j++) {
+                            const nameEl = parent.querySelector('span[title], div[title]');
+                            if (nameEl && nameEl.getAttribute('title')) {
+                                groupsWithUnread.push(nameEl.getAttribute('title').trim());
+                                break;
+                            }
+                            parent = parent.parentElement;
+                        }
                     }
                 }
 
