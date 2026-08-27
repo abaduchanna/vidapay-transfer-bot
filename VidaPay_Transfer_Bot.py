@@ -2676,11 +2676,14 @@ class WhatsAppScraper:
 
     def check_group_notifications(self):
         """Check WhatsApp Web for groups with unread message badges.
-        Returns a list of group names that have new (unread) messages.
-        Uses JavaScript to find notification badges in the chat list."""
+        Also ensures notification settings are enabled.
+        Returns a list of group names that have new (unread) messages."""
         try:
             self._focus_wa_window()
             time.sleep(0.5)
+
+            # First, ensure WhatsApp notification settings are ON
+            self._ensure_notification_settings_on()
 
             # JavaScript to find all chat list items with unread badges
             unread_groups = self.driver.execute_script("""
@@ -2737,6 +2740,123 @@ class WhatsAppScraper:
         except Exception as e:
             self.log(f"Notification check error: {e}")
             return []
+
+    def _ensure_notification_settings_on(self):
+        """Ensure WhatsApp Web notification settings are enabled.
+        Opens Settings → Notifications and turns ON:
+        - Message notifications
+        - Show previews
+        - Show reaction notifications
+        - Background sync
+        Only runs once per session (tracked via self._notif_checked)."""
+        # Only check once per session
+        if getattr(self, '_notif_checked', False):
+            return
+        self._notif_checked = True
+
+        try:
+            # Click the Settings (menu) button — the three dots or gear icon
+            # Try multiple selectors for the settings button
+            settings_clicked = False
+            for selector in [
+                'span[data-testid="menu"]',
+                'div[aria-label="Menu"]',
+                'button[aria-label="Menu"]',
+                'span[aria-label="Settings"]',
+                'div[role="button"][aria-label*="Menu"]',
+                '#side > header div[role="button"]',
+            ]:
+                try:
+                    btn = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if btn.is_displayed():
+                        self.driver.execute_script("arguments[0].click();", btn)
+                        time.sleep(1)
+                        settings_clicked = True
+                        break
+                except Exception:
+                    continue
+
+            if not settings_clicked:
+                return  # Can't open settings — skip
+
+            # Click "Settings" in the dropdown menu
+            for selector in [
+                'li[role="menuitem"] div[title="Settings"]',
+                'div[role="menuitem"][title="Settings"]',
+                'li span[title="Settings"]',
+                'div[aria-label="Settings"]',
+            ]:
+                try:
+                    btn = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if btn.is_displayed():
+                        self.driver.execute_script("arguments[0].click();", btn)
+                        time.sleep(1)
+                        break
+                except Exception:
+                    continue
+
+            # Click "Notifications" in settings
+            for selector in [
+                'div[role="listitem"] span[title="Notifications"]',
+                'div[role="listitem"] div[title="Notifications"]',
+                'span[title="Notifications"]',
+                'div[aria-label="Notifications"]',
+            ]:
+                try:
+                    btn = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if btn.is_displayed():
+                        self.driver.execute_script("arguments[0].click();", btn)
+                        time.sleep(1)
+                        break
+                except Exception:
+                    continue
+
+            # Now we should be on the Notifications settings page.
+            # Find all toggle switches and ensure they're ON.
+            # WhatsApp Web toggles are typically div[role="checkbox"] or
+            # span[role="button"] with aria-checked attribute.
+            toggles = self.driver.find_elements(
+                By.CSS_SELECTOR,
+                'div[role="checkbox"], span[role="button"][aria-checked], '
+                'input[type="checkbox"], div[role="switch"]'
+            )
+
+            turned_on = 0
+            for toggle in toggles:
+                try:
+                    if not toggle.is_displayed():
+                        continue
+                    # Check if it's OFF (aria-checked="false" or not checked)
+                    checked = toggle.get_attribute("aria-checked")
+                    is_selected = toggle.is_selected()
+                    if checked == "false" or (checked is None and not is_selected):
+                        self.driver.execute_script("arguments[0].click();", toggle)
+                        time.sleep(0.5)
+                        turned_on += 1
+                except Exception:
+                    continue
+
+            if turned_on > 0:
+                self.log(f"✅ Turned ON {turned_on} notification setting(s).")
+            else:
+                self.log("✅ All notification settings already ON.")
+
+            # Go back to the chat list (press Escape or click back)
+            self.driver.execute_script("window.history.back();")
+            time.sleep(1)
+            # Press Escape to close any open menus
+            from selenium.webdriver.common.keys import Keys
+            self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+            time.sleep(0.5)
+
+        except Exception as e:
+            self.log(f"Notification settings check failed (non-critical): {e}")
+            # Try to go back to chat list
+            try:
+                self.driver.execute_script("window.history.back();")
+                time.sleep(1)
+            except Exception:
+                pass
 
     def find_and_read_groups(self, mappings, trigger_words_str="", only_unread=False):
         transfer_tasks = []
