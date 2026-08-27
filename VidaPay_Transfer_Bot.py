@@ -2630,57 +2630,51 @@ class WhatsAppScraper:
 
                     self.log(f"Trigger word matched in message: {msg.text[:80]}...")
 
-                    # Look for a store name in the message using smart matching.
+                    # Look for a store name or alias in the message using
+                    # smart matching with aliases.
                     # Rules:
-                    #   1. Word-boundary match: "colfax" matches "transfer to colfax"
-                    #      but NOT "new colfax" (the "new" prefix is checked).
-                    #   2. Full store name match: "colfax store" in the message
-                    #      is preferred over a partial "colfax" match.
-                    #   3. Store aliases: "old colfax" = "colfax", "tidwell" =
-                    #      "old tidwell" (but NOT "new tidwell").
-                    #   4. Longest match wins: if both "colfax" and "colfax store"
-                    #      match, the longer one ("colfax store") is used.
+                    #   1. Check store name + all aliases (word-boundary match)
+                    #   2. "new" prefix is rejected: "colfax" won't match "new colfax"
+                    #   3. "old" prefix is accepted: "old colfax" = "colfax"
+                    #   4. Longest match wins
+                    import re as _re
                     target_account = None
                     target_store = None
                     best_match_len = 0
 
-                    for store_name, acc_id in mappings.items():
+                    for store_name, store_data in mappings.items():
                         sn = store_name.lower()
-                        is_match = False
-
-                        # Strategy A: Full store name in message (best match)
-                        if sn in text_content:
-                            is_match = True
-
-                        # Strategy B: Store name with "store" suffix stripped
-                        # e.g. "colfax store" → try matching "colfax" as a word
-                        if not is_match and sn.endswith(" store"):
-                            short = sn[:-6].strip()  # "colfax"
-                            # Use word-boundary regex: match "colfax" but NOT "new colfax"
-                            # \b matches word boundary, (?<!\bnew\s) rejects "new colfax"
-                            import re as _re
-                            # Match "colfax" as a standalone word, but reject if preceded by "new"
-                            pattern = r'(?<!\bnew\s)\b' + _re.escape(short) + r'\b'
-                            if _re.search(pattern, text_content):
+                        # Handle both old (string) and new (dict) format
+                        if isinstance(store_data, str):
+                            acc_id = store_data
+                            aliases = []
+                        else:
+                            acc_id = store_data.get("account_id", "")
+                            aliases = store_data.get("aliases", [])
+                        
+                        # Build list of all names to check: store name + aliases
+                        all_names = [sn] + [a.lower() for a in aliases]
+                        
+                        for name in all_names:
+                            is_match = False
+                            
+                            # Strategy A: Full name in message
+                            if name in text_content:
                                 is_match = True
-                            # Also accept "old colfax" as an alias for "colfax"
-                            if not is_match and ("old " + short) in text_content:
-                                is_match = True
-
-                        # Strategy C: Short store name without "store" suffix
-                        # For stores like "tidwell store" → also match "tidwell"
-                        # but NOT "new tidwell"
-                        if not is_match and " store" not in sn:
-                            # Store name doesn't have "store" in it — try word match
-                            import re as _re
-                            pattern = r'(?<!\bnew\s)\b' + _re.escape(sn) + r'\b'
-                            if _re.search(pattern, text_content):
-                                is_match = True
-
-                        if is_match and len(sn) > best_match_len:
-                            best_match_len = len(sn)
-                            target_account = acc_id
-                            target_store = store_name
+                            
+                            # Strategy B: Word-boundary match (rejects "new" prefix)
+                            if not is_match:
+                                pattern = r'(?<!\bnew\s)\b' + _re.escape(name) + r'\b'
+                                if _re.search(pattern, text_content):
+                                    is_match = True
+                                # Accept "old" prefix as alias
+                                if not is_match and ("old " + name) in text_content:
+                                    is_match = True
+                            
+                            if is_match and len(name) > best_match_len:
+                                best_match_len = len(name)
+                                target_account = acc_id
+                                target_store = store_name
 
                     if target_account:
                         self.log(
@@ -3029,14 +3023,20 @@ class VidaPayTransferApp(tk.Tk):
         tk.Label(entry_frame, text="Store Name:").pack(
             side=tk.LEFT, padx=5
         )
-        self.entry_map_store = ttk.Entry(entry_frame, width=25)
+        self.entry_map_store = ttk.Entry(entry_frame, width=20)
         self.entry_map_store.pack(side=tk.LEFT, padx=5)
 
         tk.Label(entry_frame, text="Account ID:").pack(
             side=tk.LEFT, padx=5
         )
-        self.entry_map_acc = ttk.Entry(entry_frame, width=20)
+        self.entry_map_acc = ttk.Entry(entry_frame, width=15)
         self.entry_map_acc.pack(side=tk.LEFT, padx=5)
+
+        tk.Label(entry_frame, text="Aliases:").pack(
+            side=tk.LEFT, padx=5
+        )
+        self.entry_map_aliases = ttk.Entry(entry_frame, width=30)
+        self.entry_map_aliases.pack(side=tk.LEFT, padx=5)
 
         ttk.Button(
             entry_frame, text="Add Mapping", command=self.add_mapping
@@ -3050,13 +3050,15 @@ class VidaPayTransferApp(tk.Tk):
             entry_frame, text="Import Excel", command=self.import_excel
         ).pack(side=tk.LEFT, padx=10)
 
-        cols = ("Store Name", "Account ID")
+        cols = ("Store Name", "Account ID", "Aliases")
         self.tree_map = ttk.Treeview(
             map_frame, columns=cols, show="headings", height=8
         )
         for c in cols:
             self.tree_map.heading(c, text=c)
-            self.tree_map.column(c, width=200)
+        self.tree_map.column("Store Name", width=160)
+        self.tree_map.column("Account ID", width=100)
+        self.tree_map.column("Aliases", width=250)
         self.tree_map.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         self.refresh_mappings_tree()
@@ -3120,7 +3122,7 @@ class VidaPayTransferApp(tk.Tk):
                     and store.lower() != "nan"
                     and acc.lower() != "nan"
                 ):
-                    self.mappings[store] = acc
+                    self.mappings[store] = {"account_id": acc, "aliases": []}
                     imported_count += 1
 
             self.config_data["transfer_mappings"] = self.mappings
@@ -3172,13 +3174,32 @@ class VidaPayTransferApp(tk.Tk):
     def add_mapping(self):
         store = self.entry_map_store.get().strip()
         acc = self.entry_map_acc.get().strip()
+        aliases_str = self.entry_map_aliases.get().strip()
         if store and acc:
-            self.mappings[store] = acc
+            # Migrate old format: if mappings[store] is a string, convert to dict
+            if store in self.mappings and isinstance(self.mappings[store], str):
+                old_acc = self.mappings[store]
+                self.mappings[store] = {"account_id": old_acc, "aliases": []}
+            
+            # Ensure dict format
+            if store not in self.mappings or isinstance(self.mappings[store], str):
+                self.mappings[store] = {"account_id": acc, "aliases": []}
+            else:
+                self.mappings[store]["account_id"] = acc
+            
+            # Parse aliases (comma-separated)
+            if aliases_str:
+                aliases = [a.strip().lower() for a in aliases_str.split(",") if a.strip()]
+                self.mappings[store]["aliases"] = aliases
+            else:
+                self.mappings[store]["aliases"] = []
+            
             self.config_data["transfer_mappings"] = self.mappings
             save_config(self.config_data)
             self.refresh_mappings_tree()
             self.entry_map_store.delete(0, tk.END)
             self.entry_map_acc.delete(0, tk.END)
+            self.entry_map_aliases.delete(0, tk.END)
 
     def remove_mapping(self):
         selected = self.tree_map.selection()
@@ -3195,8 +3216,15 @@ class VidaPayTransferApp(tk.Tk):
     def refresh_mappings_tree(self):
         for item in self.tree_map.get_children():
             self.tree_map.delete(item)
-        for store, acc in self.mappings.items():
-            self.tree_map.insert("", tk.END, values=(store, acc))
+        for store, data in self.mappings.items():
+            # Handle both old (string) and new (dict) format
+            if isinstance(data, str):
+                acc = data
+                aliases = ""
+            else:
+                acc = data.get("account_id", "")
+                aliases = ", ".join(data.get("aliases", []))
+            self.tree_map.insert("", tk.END, values=(store, acc, aliases))
 
     def append_history(self, store, acc, count, status):
         record = (
