@@ -3594,6 +3594,9 @@ class VidaPayTransferApp(tk.Tk):
             # 1b. Open WhatsApp Web in a second tab alongside the CRM tab
             #     so the user can see both VidaPay CRM and WhatsApp Web
             #     in the same Edge window (side by side or tab switch).
+            #     This tab is opened ONCE and reused — we don't touch it
+            #     again unless the WhatsAppScraper needs it for Web mode.
+            wa_tab_handle = None
             self.log_msg("Opening WhatsApp Web in a second tab...")
             try:
                 if not open_blank_normal_tab(crm_system.driver, log=self.log_msg):
@@ -3602,6 +3605,7 @@ class VidaPayTransferApp(tk.Tk):
                     open_url_in_edge_tab(
                         crm_system.driver, "https://web.whatsapp.com", log=self.log_msg
                     )
+                    wa_tab_handle = crm_system.driver.current_window_handle
                     self.log_msg("WhatsApp Web tab opened alongside VidaPay CRM.")
                     # Switch back to the CRM tab so automation continues there
                     crm_system.driver.switch_to.window(crm_system.main_window)
@@ -3641,14 +3645,29 @@ class VidaPayTransferApp(tk.Tk):
                 wa_scraper = WhatsAppScraper(
                     wa_groups_str, self.log_msg, self.stop_event
                 )
-                if not wa_scraper.start_whatsapp(
-                    shared_driver=crm_system.driver
-                ):
-                    self.log_msg(
-                        "Failed to open WhatsApp Web in the shared browser. "
-                        "Aborting run."
-                    )
-                    return
+                # Reuse the WhatsApp Web tab we already opened (don't open another)
+                if wa_tab_handle:
+                    wa_scraper.driver = crm_system.driver
+                    wa_scraper.owns_driver = False
+                    wa_scraper.wait = WebDriverWait(crm_system.driver, 30)
+                    wa_scraper.wa_window = wa_tab_handle
+                    # Switch to the WhatsApp Web tab
+                    crm_system.driver.switch_to.window(wa_tab_handle)
+                    if not wa_scraper._wait_for_whatsapp_session():
+                        self.log_msg(
+                            "Failed to load WhatsApp Web in the shared browser. "
+                            "Aborting run."
+                        )
+                        return
+                else:
+                    if not wa_scraper.start_whatsapp(
+                        shared_driver=crm_system.driver
+                    ):
+                        self.log_msg(
+                            "Failed to open WhatsApp Web in the shared browser. "
+                            "Aborting run."
+                        )
+                        return
 
             tasks = wa_scraper.find_and_read_groups(self.mappings)
             self.log_msg(
