@@ -1941,35 +1941,15 @@ class VidapayTransferSystem:
     def navigate_to_transfer_tool(self):
         self.log("Navigating to Inventory Reassignment Tool...")
         
-        # Close the WhatsApp tab to free memory before CRM navigation.
-        # WhatsApp Web is a heavy JS app that causes msedgedriver to crash
-        # when the browser runs low on memory.
-        wa_handle = None
-        try:
-            handles = self.driver.window_handles
-            for h in handles:
-                if h != self.main_window:
-                    self.driver.switch_to.window(h)
-                    if "whatsapp" in (self.driver.title or "").lower():
-                        wa_handle = h
-                        break
-            if wa_handle:
-                self.driver.switch_to.window(wa_handle)
-                self.driver.close()
-                self.log("Closed WhatsApp tab to free memory.")
-                time.sleep(1)
-        except Exception:
-            pass
-        
-        # Switch to CRM tab
+        # Don't close tabs — driver.close() kills the msedgedriver session.
+        # Just switch to the CRM tab.
         self._focus_main_window()
-        time.sleep(1)
+        time.sleep(2)
 
         for attempt in range(3):
             try:
-                # Use JS navigation instead of driver.get() — lighter weight
-                self.driver.execute_script(
-                    "window.location.href = 'https://www.vidapaycrm.com/InventoryReassignmentTool.aspx';"
+                self.driver.get(
+                    "https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
                 )
                 self.wait.until(
                     EC.presence_of_element_located(
@@ -1979,18 +1959,20 @@ class VidapayTransferSystem:
                 time.sleep(2)
                 return True
             except Exception as e:
-                self.log(f"Navigation attempt {attempt+1}/3 failed: {e}")
+                err_str = str(e)[:100]
+                self.log(f"Navigation attempt {attempt+1}/3 failed: {err_str}")
                 if attempt < 2:
-                    self.log("Retrying in 5 seconds...")
-                    time.sleep(5)
-                    # Try re-attaching to the Edge browser
+                    self.log("Retrying in 10 seconds...")
+                    time.sleep(10)
+                    # Re-attach to Edge with a fresh driver
                     try:
                         self.driver = create_edge_driver(log=self.log)
                         self.wait = WebDriverWait(self.driver, 30)
                         self.main_window = self.driver.current_window_handle
                         self.log("Re-attached to Edge browser.")
-                    except Exception:
-                        pass
+                        time.sleep(2)
+                    except Exception as re_err:
+                        self.log(f"Re-attach failed: {re_err}")
         self.log("All navigation attempts failed.")
         return False
 
@@ -4907,33 +4889,11 @@ class VidaPayTransferApp(tk.Tk):
                                 )
 
                         self.log_msg(f"Sending WhatsApp reply to '{task['group']}'...")
-                        
-                        # Reopen WhatsApp tab (was closed to free memory)
-                        try:
-                            if not open_blank_normal_tab(crm_system.driver, log=self.log_msg):
-                                self.log_msg("Could not reopen WhatsApp tab.")
-                            else:
-                                crm_system.driver.get("https://web.whatsapp.com")
-                                time.sleep(3)
-                                wa_tab_handle = crm_system.driver.current_window_handle
-                                # Update wa_scraper's tab handle
-                                wa_scraper.wa_window = wa_tab_handle
-                                wa_scraper.driver = crm_system.driver
-                                self.log_msg("WhatsApp tab reopened.")
-                        except Exception as wa_err:
-                            self.log_msg(f"WhatsApp tab reopen failed: {wa_err}")
-                        
                         wa_scraper.send_reply(task["group"], reply_msg)
                         time.sleep(2)
 
-                        # Close WhatsApp tab again to free memory for next transfer
+                        # Switch back to CRM tab
                         try:
-                            handles = crm_system.driver.window_handles
-                            for h in handles:
-                                if h != crm_system.main_window:
-                                    crm_system.driver.switch_to.window(h)
-                                    crm_system.driver.close()
-                                    break
                             crm_system.driver.switch_to.window(crm_system.main_window)
                         except Exception:
                             pass
@@ -5031,30 +4991,11 @@ class VidaPayTransferApp(tk.Tk):
                                     )
 
                             self.log_msg(f"Sending WhatsApp reply to '{task['group']}'...")
-                            
-                            # Reopen WhatsApp tab (was closed for CRM navigation)
-                            try:
-                                if not open_blank_normal_tab(crm_system.driver, log=self.log_msg):
-                                    self.log_msg("Could not reopen WhatsApp tab.")
-                                else:
-                                    crm_system.driver.get("https://web.whatsapp.com")
-                                    time.sleep(3)
-                                    wa_scraper.wa_window = crm_system.driver.current_window_handle
-                                    wa_scraper.driver = crm_system.driver
-                                    self.log_msg("WhatsApp tab reopened.")
-                            except Exception as wa_err:
-                                self.log_msg(f"WhatsApp tab reopen failed: {wa_err}")
-                            
                             wa_scraper.send_reply(task["group"], reply_msg)
                             time.sleep(2)
 
-                            # Close WhatsApp tab to free memory
+                            # Switch back to CRM tab
                             try:
-                                for h in crm_system.driver.window_handles:
-                                    if h != crm_system.main_window:
-                                        crm_system.driver.switch_to.window(h)
-                                        crm_system.driver.close()
-                                        break
                                 crm_system.driver.switch_to.window(crm_system.main_window)
                             except Exception:
                                 pass
