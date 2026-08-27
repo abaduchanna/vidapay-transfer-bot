@@ -2714,9 +2714,72 @@ class WhatsAppScraper:
                 search_box.send_keys(Keys.ENTER)
                 time.sleep(3)
 
-                messages = self.driver.find_elements(
-                    By.CSS_SELECTOR, "div.message-in"
-                )
+                # Find all message elements in the chat.
+                # WhatsApp Web changes their DOM frequently, so try multiple selectors.
+                messages = []
+                for selector in [
+                    "div.message-in",                                          # older WhatsApp
+                    "div[data-id] > div > div",                                # message rows
+                    "div[role='row']",                                         # newer WhatsApp
+                    "div[class*='message-in']",                                # class contains
+                    "div[class*='message'] div[class*='bubble']",              # bubble containers
+                    "span.selectable-text",                                    # text spans
+                    "div.copyable-text",                                       # copyable text
+                    "[data-testid='conversation-panel-messages'] div",         # test-id based
+                    "div[class*='msg']",                                       # any msg class
+                ]:
+                    try:
+                        found = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                        if found:
+                            messages = found
+                            self.log(f"  Using selector: {selector} ({len(messages)} elements)")
+                            break
+                    except Exception:
+                        continue
+
+                # If still no messages, try a broader approach: get all text
+                # from the chat panel via JavaScript
+                if not messages:
+                    try:
+                        # Get the chat panel and extract all text blocks
+                        chat_texts = self.driver.execute_script("""
+                            // Find the chat messages panel
+                            const panels = document.querySelectorAll(
+                                '[data-testid="conversation-panel-messages"], '
+                              + 'div[class*="message-list"], '
+                              + 'div[class*="chat-body"], '
+                              + 'div[role="application"] div[role="list"]'
+                            );
+                            if (panels.length === 0) return [];
+                            
+                            const panel = panels[panels.length - 1];
+                            // Get all text nodes that look like messages
+                            const textNodes = [];
+                            const walker = document.createTreeWalker(
+                                panel,
+                                NodeFilter.SHOW_TEXT,
+                                null,
+                                false
+                            );
+                            while (walker.nextNode()) {
+                                const text = walker.currentNode.textContent.trim();
+                                if (text.length > 3) {
+                                    textNodes.push(text);
+                                }
+                            }
+                            return textNodes;
+                        """)
+                        if chat_texts:
+                            self.log(f"  Found {len(chat_texts)} text blocks via JS walker.")
+                            # Create a simple wrapper for each text block
+                            class _TextMsg:
+                                def __init__(self, text):
+                                    self.text = text
+                                def screenshot(self, path):
+                                    pass  # no screenshot for text-only
+                            messages = [_TextMsg(t) for t in chat_texts]
+                    except Exception as js_err:
+                        self.log(f"  JS text walker failed: {js_err}")
                 self.log(
                     f"[{group_name}] Found {len(messages)} recent incoming messages."
                 )
