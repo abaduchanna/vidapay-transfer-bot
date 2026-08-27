@@ -93,6 +93,8 @@ class FixedHeaderManager:
         # Raise logo and divider above the title
         self.left_frame.tkraise()
         self.right_frame.tkraise()
+        # Also raise after the window is realized (delayed)
+        self.header_frame.after(100, lambda: (self.left_frame.tkraise(), self.right_frame.tkraise(), self.divider_frame.tkraise()))
 
         # Tag all header widgets
         self.header_frame._tag  = "header"

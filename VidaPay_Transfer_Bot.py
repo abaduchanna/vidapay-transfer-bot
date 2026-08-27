@@ -2570,8 +2570,15 @@ class WhatsAppScraper:
             pass
         return False
 
-    def find_and_read_groups(self, mappings):
+    def find_and_read_groups(self, mappings, trigger_words_str=""):
         transfer_tasks = []
+
+        # Parse trigger words/sentences (comma-separated, case-insensitive)
+        if trigger_words_str.strip():
+            trigger_words = [w.strip().lower() for w in trigger_words_str.split(",") if w.strip()]
+        else:
+            trigger_words = ["transfer"]  # default fallback
+        self.log(f"Trigger words: {trigger_words}")
 
         # Make sure the WhatsApp tab is the active one before scraping
         self._focus_wa_window()
@@ -2615,40 +2622,48 @@ class WhatsAppScraper:
                         break
 
                     text_content = msg.text.lower()
-                    if "transfer" in text_content:
-                        target_account = None
-                        target_store = None
-                        for store_name, acc_id in mappings.items():
-                            if store_name.lower() in text_content:
-                                target_account = acc_id
-                                target_store = store_name
-                                break
 
-                        if target_account:
+                    # Check if ANY trigger word/sentence is in the message
+                    triggered = any(tw in text_content for tw in trigger_words)
+                    if not triggered:
+                        continue
+
+                    self.log(f"Trigger word matched in message: {msg.text[:80]}...")
+
+                    # Look for a store name in the message
+                    target_account = None
+                    target_store = None
+                    for store_name, acc_id in mappings.items():
+                        if store_name.lower() in text_content:
+                            target_account = acc_id
+                            target_store = store_name
+                            break
+
+                    if target_account:
+                        self.log(
+                            f"Transfer request detected in '{group_name}' "
+                            f"for '{target_store}' -> Account: {target_account}"
+                        )
+                        img_path = os.path.join(
+                            os.environ.get("TEMP", ""), "wa_msg_temp.png"
+                        )
+                        msg.screenshot(img_path)
+
+                        imeis = self._extract_imeis_from_image(img_path)
+                        if imeis:
                             self.log(
-                                f"Transfer request detected in '{group_name}' "
-                                f"for '{target_store}' -> Account: {target_account}"
+                                f"Extracted {len(imeis)} IMEIs via OCR."
                             )
-                            img_path = os.path.join(
-                                os.environ.get("TEMP", ""), "wa_msg_temp.png"
+                            transfer_tasks.append({
+                                "group": group_name,
+                                "store": target_store,
+                                "account_id": target_account,
+                                "imeis": imeis,
+                            })
+                        else:
+                            self.log(
+                                "No valid IMEIs found in the message image."
                             )
-                            msg.screenshot(img_path)
-
-                            imeis = self._extract_imeis_from_image(img_path)
-                            if imeis:
-                                self.log(
-                                    f"Extracted {len(imeis)} IMEIs via OCR."
-                                )
-                                transfer_tasks.append({
-                                    "group": group_name,
-                                    "store": target_store,
-                                    "account_id": target_account,
-                                    "imeis": imeis,
-                                })
-                            else:
-                                self.log(
-                                    "No valid IMEIs found in the message image."
-                                )
 
                 search_box.send_keys(Keys.ESCAPE)
                 time.sleep(1)
@@ -2921,13 +2936,31 @@ class VidaPayTransferApp(tk.Tk):
         tk.Radiobutton(wa_mode_frame, text="WhatsApp Web", variable=self.wa_mode_var,
                        value="web").pack(side=tk.LEFT)
 
+        # Trigger words/sentences — bot only activates when these appear
+        # in a WhatsApp message (case-insensitive). Messages with images
+        # containing IMEIs are OCR'd when any trigger word matches.
+        tk.Label(
+            bot_frame,
+            text="Trigger words/sentences (comma-separated):"
+        ).grid(
+            row=3, column=0, padx=10, pady=(6, 2), sticky=tk.W
+        )
+        self.txt_trigger_words = scrolledtext.ScrolledText(
+            bot_frame, width=35, height=3, font=("Segoe UI", 9)
+        )
+        saved_triggers = self.config_data.get("trigger_words", "transfer")
+        self.txt_trigger_words.insert(tk.END, saved_triggers)
+        self.txt_trigger_words.grid(
+            row=4, column=0, columnspan=2, padx=10, pady=2, sticky=tk.W
+        )
+
         tk.Label(bot_frame, text="Schedule (HH:MM):").grid(
-            row=3, column=0, padx=10, pady=5, sticky=tk.W
+            row=5, column=0, padx=10, pady=5, sticky=tk.W
         )
         self.entry_schedule = ttk.Entry(bot_frame, width=25)
         self.entry_schedule.insert(0, self.schedule_times)
         self.entry_schedule.grid(
-            row=3, column=1, padx=10, pady=5, sticky=tk.W
+            row=5, column=1, padx=10, pady=5, sticky=tk.W
         )
 
         self.btn_save = self._make_btn(
@@ -3079,6 +3112,9 @@ class VidaPayTransferApp(tk.Tk):
             self.txt_wa_groups.get("1.0", tk.END).strip()
         )
         self.config_data["whatsapp_mode"] = self.wa_mode_var.get()
+        self.config_data["trigger_words"] = (
+            self.txt_trigger_words.get("1.0", tk.END).strip()
+        )
         self.config_data["transfer_schedule"] = (
             self.entry_schedule.get().strip()
         )
@@ -3866,9 +3902,10 @@ class VidaPayTransferApp(tk.Tk):
         self.stop_event.clear()
         self.ui_state_running()
         wa_mode = self.wa_mode_var.get()
+        trigger_words_str = self.txt_trigger_words.get("1.0", tk.END).strip()
         threading.Thread(
             target=self._bot_workflow,
-            args=(acc, usr, pwd, wa_groups_str, wa_mode),
+            args=(acc, usr, pwd, wa_groups_str, wa_mode, trigger_words_str),
             daemon=True,
         ).start()
 
@@ -3876,7 +3913,7 @@ class VidaPayTransferApp(tk.Tk):
         self.log_msg("Sending stop signal... Please wait.")
         self.stop_event.set()
 
-    def _bot_workflow(self, crm_acc, crm_usr, crm_pwd, wa_groups_str, wa_mode="web"):
+    def _bot_workflow(self, crm_acc, crm_usr, crm_pwd, wa_groups_str, wa_mode="web", trigger_words_str=""):
         self.log_msg("=== Starting Transfer Bot Workflow ===")
         wa_scraper = None
         crm_system = None
@@ -3990,7 +4027,7 @@ class VidaPayTransferApp(tk.Tk):
                         )
                         return
 
-            tasks = wa_scraper.find_and_read_groups(self.mappings)
+            tasks = wa_scraper.find_and_read_groups(self.mappings, trigger_words_str)
             self.log_msg(
                 f"Extraction complete: {len(tasks)} transfer request(s) found."
             )
