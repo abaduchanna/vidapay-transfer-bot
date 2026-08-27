@@ -1,0 +1,34 @@
+{
+  "triggers": [
+    "transfer to",
+    "t to",
+    "trf to",
+    "move to",
+    "send to",
+    "tt"
+  ],
+  "groups": [
+    "GFH TELECOM HOUSTON",
+    "GFH TELECOM ARIZONA",
+    "All district management 2.0",
+    "BO reporting issues",
+    "Inventory Transfers"
+  ],
+  "crm": {
+    "url": "https://www.vidapaycrm.com/InventoryReassignmentTool.aspx",
+    "timeout": 30
+  },
+  "whatsapp": {
+    "url": "https://web.whatsapp.com",
+    "check_interval": 10,
+    "headless": false
+  },
+  "retry": {
+    "max_attempts": 3,
+    "delay": 5
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "bot_log.txt"
+  }
+}
