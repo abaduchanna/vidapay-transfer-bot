@@ -3054,13 +3054,36 @@ class WhatsAppScraper:
                         all_names = [sn] + [a.lower() for a in aliases]
                         
                         for name in all_names:
+                            # Skip very short aliases (1-2 chars) to avoid
+                            # matching numbers inside phone numbers like
+                            # "+1 (786) 585-3556" matching "35"
+                            if len(name) < 3:
+                                continue
+                                
                             is_match = False
+                            # Strategy A: Full name in message (but NOT inside
+                            # a phone number — check that the match isn't
+                            # preceded by digits/parens/plus)
                             if name in text_content:
-                                is_match = True
+                                # Use regex to ensure it's not part of a
+                                # phone number (preceded by digit/paren/+)
+                                phone_check = _re.search(
+                                    r'[\d\+\(\-]\s*' + _re.escape(name) + r'\b',
+                                    text_content
+                                )
+                                if not phone_check:
+                                    is_match = True
+                            
+                            # Strategy B: Word-boundary match (rejects "new" prefix)
                             if not is_match:
                                 pattern = r'(?<!\bnew\s)\b' + _re.escape(name) + r'\b'
-                                if _re.search(pattern, text_content):
-                                    is_match = True
+                                m = _re.search(pattern, text_content)
+                                if m:
+                                    # Check it's not inside a phone number
+                                    start = m.start()
+                                    before = text_content[max(0,start-3):start]
+                                    if not _re.search(r'[\d\+\(\-]\s*$', before):
+                                        is_match = True
                                 if not is_match and ("old " + name) in text_content:
                                     is_match = True
                             
@@ -4654,101 +4677,97 @@ class VidaPayTransferApp(tk.Tk):
 
             if not tasks:
                 self.log_msg(
-                    "No pending transfer requests found across any monitored group."
+                    "No pending transfer requests found in initial scan. "
+                    "Entering monitoring mode..."
                 )
-                return
-
-            # 3. Run transfers one by one
-            self.log_msg(
-                f"Starting transfers: {len(tasks)} task(s) to process."
-            )
-
-            for task_idx, task in enumerate(tasks, 1):
-                if self.stop_event.is_set():
-                    break
-
+                # Don't return — fall through to the monitoring loop below
+            else:
+                # 3. Run transfers one by one
                 self.log_msg(
-                    f"\n{'='*60}\n"
-                    f"Transfer {task_idx}/{len(tasks)}: {task['store']} "
-                    f"({len(task['imeis'])} IMEIs)\n"
-                    f"{'='*60}"
+                    f"Starting transfers: {len(tasks)} task(s) to process."
                 )
 
-                # Navigate to the Transfer Tool for each task (the previous
-                # transfer navigated back to Main Panel)
-                if not crm_system.navigate_to_transfer_tool():
+                # Process initial transfers
+                for task_idx, task in enumerate(tasks, 1):
+                    if self.stop_event.is_set():
+                        break
+
                     self.log_msg(
-                        f"Could not open Reassignment Tool for task {task_idx}. "
-                        f"Skipping to next task."
+                        f"\n{'='*60}\n"
+                        f"Transfer {task_idx}/{len(tasks)}: {task['store']} "
+                        f"({len(task['imeis'])} IMEIs)\n"
+                        f"{'='*60}"
                     )
-                    self.append_history(
-                        task["store"],
-                        task["account_id"],
-                        len(task["imeis"]),
-                        "FAILED — Navigation error",
-                    )
-                    continue
 
-                # Clear any previous error screenshots
-                if hasattr(crm_system, '_error_screenshots'):
-                    crm_system._error_screenshots = []
-
-                success = crm_system.execute_transfer(
-                    task["account_id"], task["imeis"]
-                )
-                status = "SUCCESS" if success else "FAILED"
-                self.append_history(
-                    task["store"],
-                    task["account_id"],
-                    len(task["imeis"]),
-                    status,
-                )
-
-                # Send WhatsApp reply to the same group
-                if wa_scraper and wa_mode != "desktop":
-                    if success:
-                        reply_msg = (
-                            f"✅ Transfer completed: {len(task['imeis'])} device(s) "
-                            f"transferred to {task['store']} "
-                            f"(Account: {task['account_id']})"
+                    # Navigate to the Transfer Tool for each task
+                    if not crm_system.navigate_to_transfer_tool():
+                        self.log_msg(
+                            f"Could not open Reassignment Tool for task {task_idx}. "
+                            f"Skipping to next task."
                         )
-                    else:
-                        # Check if it was a locked store
-                        error_screenshots = getattr(crm_system, '_error_screenshots', [])
-                        if error_screenshots:
-                            error_details = "; ".join(
-                                f"{e['imei']}: {e['error']}" for e in error_screenshots
-                            )
+                        self.append_history(
+                            task["store"], task["account_id"],
+                            len(task["imeis"]), "FAILED — Navigation error",
+                        )
+                        continue
+
+                    # Clear any previous error screenshots
+                    if hasattr(crm_system, '_error_screenshots'):
+                        crm_system._error_screenshots = []
+
+                    success = crm_system.execute_transfer(
+                        task["account_id"], task["imeis"]
+                    )
+                    status = "SUCCESS" if success else "FAILED"
+                    self.append_history(
+                        task["store"], task["account_id"],
+                        len(task["imeis"]), status,
+                    )
+
+                    # Send WhatsApp reply to the same group
+                    if wa_scraper and wa_mode != "desktop":
+                        if success:
                             reply_msg = (
-                                f"⚠️ Transfer to {task['store']} had errors: "
-                                f"{error_details}"
+                                f"✅ Transfer completed: {len(task['imeis'])} device(s) "
+                                f"transferred to {task['store']} "
+                                f"(Account: {task['account_id']})"
                             )
                         else:
-                            reply_msg = (
-                                f"❌ Transfer to {task['store']} FAILED — "
-                                f"store may be LOCKED or temporarily suspended. "
-                                f"Please check manually."
-                            )
-                    
-                    self.log_msg(f"Sending WhatsApp reply to '{task['group']}'...")
-                    wa_scraper.send_reply(task["group"], reply_msg)
-                    time.sleep(2)
-                    
-                    # Switch back to CRM tab for the next transfer
-                    try:
-                        crm_system.driver.switch_to.window(crm_system.main_window)
-                    except Exception:
-                        pass
-                else:
-                    self.log_msg(
-                        f"Transfer {status} for {task['store']} — "
-                        f"WhatsApp reply skipped (Desktop mode or no scraper)."
-                    )
+                            error_screenshots = getattr(crm_system, '_error_screenshots', [])
+                            if error_screenshots:
+                                error_details = "; ".join(
+                                    f"{e['imei']}: {e['error']}" for e in error_screenshots
+                                )
+                                reply_msg = (
+                                    f"⚠️ Transfer to {task['store']} had errors: "
+                                    f"{error_details}"
+                                )
+                            else:
+                                reply_msg = (
+                                    f"❌ Transfer to {task['store']} FAILED — "
+                                    f"store may be LOCKED or temporarily suspended. "
+                                    f"Please check manually."
+                                )
 
-                self.log_msg(
-                    f"Task {task_idx}/{len(tasks)} complete. "
-                    f"{'Moving to next task...' if task_idx < len(tasks) else 'All tasks done!'}"
-                )
+                        self.log_msg(f"Sending WhatsApp reply to '{task['group']}'...")
+                        wa_scraper.send_reply(task["group"], reply_msg)
+                        time.sleep(2)
+
+                        # Switch back to CRM tab for the next transfer
+                        try:
+                            crm_system.driver.switch_to.window(crm_system.main_window)
+                        except Exception:
+                            pass
+                    else:
+                        self.log_msg(
+                            f"Transfer {status} for {task['store']} — "
+                            f"WhatsApp reply skipped (Desktop mode or no scraper)."
+                        )
+
+                    self.log_msg(
+                        f"Task {task_idx}/{len(tasks)} complete. "
+                        f"{'Moving to next task...' if task_idx < len(tasks) else 'All tasks done!'}"
+                    )
 
             self.log_msg("=== Workflow Complete ===")
 
