@@ -3113,10 +3113,18 @@ class WhatsAppScraper:
                             if imeis:
                                 self.log(f"Extracted {len(imeis)} IMEIs via OCR from trigger message image.")
                         
+                        # Also check for <img> tags inside the trigger message
+                        # (WhatsApp images are loaded as blob: URLs)
+                        if not imeis:
+                            try:
+                                imeis = self._extract_imeis_from_msg_images(msg)
+                                if imeis:
+                                    self.log(f"Extracted {len(imeis)} IMEIs from trigger message images.")
+                            except Exception:
+                                pass
+                        
                         if not imeis:
                             # Step 3: Check messages ABOVE (previous messages)
-                            # User often sends IMEIs in a separate message before
-                            # the trigger message
                             self.log("No IMEIs in trigger message — checking adjacent messages...")
                             for check_idx in range(msg_idx - 1, max(msg_idx - 4, -1), -1):
                                 if check_idx < 0 or check_idx >= len(messages):
@@ -3130,7 +3138,16 @@ class WhatsAppScraper:
                                     self.log(f"Extracted {len(imeis)} IMEIs from message above (index {check_idx}).")
                                     break
                                 
-                                # Try OCR on adjacent message
+                                # Try extracting from <img> tags in the message
+                                try:
+                                    imeis = self._extract_imeis_from_msg_images(adj_msg)
+                                    if imeis:
+                                        self.log(f"Extracted {len(imeis)} IMEIs from images in message above (index {check_idx}).")
+                                        break
+                                except Exception:
+                                    pass
+                                
+                                # Try OCR on screenshot
                                 adj_img = os.path.join(
                                     os.environ.get("TEMP", ""), f"wa_adj_{check_idx}.png"
                                 )
@@ -3152,7 +3169,16 @@ class WhatsAppScraper:
                                     self.log(f"Extracted {len(imeis)} IMEIs from message below (index {check_idx}).")
                                     break
                                 
-                                # Try OCR on adjacent message
+                                # Try extracting from <img> tags in the message
+                                try:
+                                    imeis = self._extract_imeis_from_msg_images(adj_msg)
+                                    if imeis:
+                                        self.log(f"Extracted {len(imeis)} IMEIs from images in message below (index {check_idx}).")
+                                        break
+                                except Exception:
+                                    pass
+                                
+                                # Try OCR on screenshot
                                 adj_img = os.path.join(
                                     os.environ.get("TEMP", ""), f"wa_adj_{check_idx}.png"
                                 )
@@ -3160,6 +3186,7 @@ class WhatsAppScraper:
                                 imeis = self._extract_imeis_from_image(adj_img)
                                 if imeis:
                                     self.log(f"Extracted {len(imeis)} IMEIs via OCR from message below (index {check_idx}).")
+                                    break
                                     break
                         
                         if imeis:
@@ -3204,18 +3231,17 @@ class WhatsAppScraper:
 
     def _extract_imeis_from_image(self, img_path):
         try:
-            # FIX #6: Preprocess image for better OCR accuracy
+            # Preprocess image for better OCR accuracy
             img = Image.open(img_path)
             img = img.convert("L")  # grayscale
             img = img.resize(
                 (img.width * 2, img.height * 2), Image.Resampling.LANCZOS
             )
 
-            # FIX #6: Use Tesseract config for better results
             custom_config = r"--oem 3 --psm 6"
             text = pytesseract.image_to_string(img, config=custom_config)
 
-            # FIX #7: Also search stripped text for OCR output with spaces/dashes
+            # Search both stripped and raw text
             cleaned = re.sub(r"[\s\-\.]+", "", text)
             imeis_from_cleaned = re.findall(r"(?:35|01)\d{13}", cleaned)
             imeis_from_raw = re.findall(r"\b(?:35|01)\d{13}\b", text)
@@ -3224,6 +3250,86 @@ class WhatsAppScraper:
         except Exception as e:
             self.log(f"OCR Error: {e}")
             return []
+
+    def _extract_imeis_from_msg_images(self, msg_element):
+        """Find all <img> tags inside a WhatsApp message element,
+        download each image, and OCR it for IMEIs."""
+        all_imeis = set()
+        try:
+            # Find all image elements inside the message
+            imgs = msg_element.find_elements(By.CSS_SELECTOR, "img[src*='blob:'], img[src*='http'], img[data-src]")
+            if not imgs:
+                # Also try background images (WhatsApp sometimes uses CSS background)
+                imgs = msg_element.find_elements(By.CSS_SELECTOR, "img")
+            
+            for img_el in imgs:
+                try:
+                    if not img_el.is_displayed():
+                        continue
+                    # Get the image source
+                    src = img_el.get_attribute("src") or img_el.get_attribute("data-src") or ""
+                    if not src or len(src) < 50:
+                        continue
+                    
+                    # Download the image
+                    img_path = os.path.join(
+                        os.environ.get("TEMP", tempfile.gettempdir()),
+                        f"wa_img_{int(time.time()*1000)}.png"
+                    )
+                    
+                    if src.startswith("blob:"):
+                        # Blob URLs need to be fetched via JS
+                        img_data = self.driver.execute_script("""
+                            return new Promise((resolve, reject) => {
+                                const xhr = new XMLHttpRequest();
+                                xhr.open('GET', arguments[0], true);
+                                xhr.responseType = 'blob';
+                                xhr.onload = function() {
+                                    const reader = new FileReader();
+                                    reader.onloadend = function() {
+                                        resolve(reader.result);
+                                    };
+                                    reader.readAsDataURL(xhr.response);
+                                };
+                                xhr.onerror = reject;
+                                xhr.send();
+                            });
+                        """, src)
+                        if img_data and img_data.startswith("data:"):
+                            # Strip the data: prefix
+                            header, b64data = img_data.split(",", 1)
+                            with open(img_path, "wb") as f:
+                                f.write(base64.b64decode(b64data))
+                        else:
+                            continue
+                    elif src.startswith("http"):
+                        # Regular URL — download with requests
+                        import requests as _req
+                        resp = _req.get(src, timeout=15)
+                        with open(img_path, "wb") as f:
+                            f.write(resp.content)
+                    else:
+                        continue
+                    
+                    # OCR the downloaded image
+                    if os.path.exists(img_path) and os.path.getsize(img_path) > 100:
+                        imeis = self._extract_imeis_from_image(img_path)
+                        if imeis:
+                            self.log(f"  Found {len(imeis)} IMEIs in image: {imeis}")
+                            all_imeis.update(imeis)
+                        
+                        # Clean up
+                        try:
+                            os.unlink(img_path)
+                        except:
+                            pass
+                except Exception as img_err:
+                    self.log(f"  Image extraction error: {img_err}")
+                    continue
+        except Exception as e:
+            self.log(f"Image scan error: {e}")
+        
+        return list(all_imeis)
 
     def close(self):
         # Only quit the browser if this scraper launched it. When reusing the
