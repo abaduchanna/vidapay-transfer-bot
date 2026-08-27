@@ -1756,55 +1756,77 @@ class VidapayTransferSystem:
         return any(text.lower() == t.lower() for t in self._get_visible_h3_texts())
 
     def _click_new_sign_in_next(self):
-        try:
-            btn = self.driver.find_element(By.ID, "btnNext")
-            if btn.is_displayed():
-                btn.click()
-                return True
-        except Exception:
-            pass
-        try:
-            btns = self.driver.find_elements(By.CSS_SELECTOR, "input[type='submit']")
-            for b in btns:
-                if b.is_displayed() and b.is_enabled():
-                    b.click()
-                    return True
-        except Exception:
-            pass
+        """Click 'Next' on New Sign In page — same selectors as Device Ordering."""
+        locators = [
+            (By.XPATH, "//button[contains(@onclick, 'goToTwoFactorCheck') and normalize-space()='Next']"),
+            (By.CSS_SELECTOR, "button[onclick*='goToTwoFactorCheck']"),
+            (By.XPATH, "//button[contains(@class, 'btn') and normalize-space()='Next']"),
+            (By.ID, "btnNext"),
+        ]
+        for by, value in locators:
+            try:
+                btns = self.driver.find_elements(by, value)
+                for b in btns:
+                    if b.is_displayed() and b.is_enabled():
+                        self.driver.execute_script("arguments[0].click();", b)
+                        return True
+            except Exception:
+                continue
         return False
 
     def _click_trust_radio(self):
-        try:
-            for el in self.driver.find_elements(By.ID, "trustRadio"):
-                if el.is_displayed():
-                    el.click()
-                    return True
-        except Exception:
-            pass
+        """Click 'Trust This Device' radio — same selectors as Device Ordering."""
+        locators = [
+            (By.ID, "trustRadio"),
+            (By.CSS_SELECTOR, "input[name='TrustedDevice'][value='True']"),
+        ]
+        for by, value in locators:
+            try:
+                elements = self.driver.find_elements(by, value)
+                for element in elements:
+                    if element.is_displayed() and element.is_enabled():
+                        if not element.is_selected():
+                            self.driver.execute_script("arguments[0].click();", element)
+                        return True
+            except Exception:
+                continue
         return False
 
     def _click_setup_next(self, label_hint=""):
-        try:
-            btns = self.driver.find_elements(By.CSS_SELECTOR, "input[type='submit']")
-            for b in btns:
-                txt = (b.get_attribute("value") or "").strip()
-                if b.is_displayed() and b.is_enabled() and txt.lower() in ("next", "continue"):
-                    b.click()
-                    return True
-        except Exception:
-            pass
+        """Click 'Next' on setup pages — same selectors as Device Ordering."""
+        locators = [
+            (By.ID, "setupNextBtn"),
+            (By.XPATH, "//button[@id='setupNextBtn' and normalize-space()='Next']"),
+            (By.XPATH, "//button[contains(@onclick, 'submitThisForm') and normalize-space()='Next']"),
+            (By.XPATH, "//button[contains(@class, 'btn') and normalize-space()='Next']"),
+        ]
+        for by, value in locators:
+            try:
+                btns = self.driver.find_elements(by, value)
+                for b in btns:
+                    if b.is_displayed() and b.is_enabled():
+                        self.driver.execute_script("arguments[0].click();", b)
+                        return True
+            except Exception:
+                continue
         return False
 
     def _click_ready_to_go_continue(self):
-        try:
-            btns = self.driver.find_elements(By.CSS_SELECTOR, "input[type='submit']")
-            for b in btns:
-                val = (b.get_attribute("value") or "").strip().lower()
-                if b.is_displayed() and b.is_enabled() and ("continue" in val or "ready" in val):
-                    b.click()
-                    return True
-        except Exception:
-            pass
+        """Click 'Continue' on Ready to Go page — same selectors as Device Ordering."""
+        locators = [
+            (By.XPATH, "//button[contains(@onclick, 'vidapayAutomaticSignIn') and normalize-space()='Continue']"),
+            (By.CSS_SELECTOR, "button[onclick*='vidapayAutomaticSignIn']"),
+            (By.XPATH, "//button[contains(@class, 'btn') and normalize-space()='Continue']"),
+        ]
+        for by, value in locators:
+            try:
+                btns = self.driver.find_elements(by, value)
+                for b in btns:
+                    if b.is_displayed() and b.is_enabled():
+                        self.driver.execute_script("arguments[0].click();", b)
+                        return True
+            except Exception:
+                continue
         return False
 
     def _complete_signin_flow(self, timeout_seconds=420):
