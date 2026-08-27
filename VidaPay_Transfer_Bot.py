@@ -2910,11 +2910,25 @@ class WhatsAppScraper:
         # If only_unread mode, check which groups have new messages
         unread_groups = []
         if only_unread:
-            unread_groups = self.check_group_notifications()
+            raw_unread = self.check_group_notifications()
+            # Filter to ONLY return actual configured group names
+            # (the notification detection can return garbage like
+            # "3 unread messages" or "WhatsApp" — ignore those)
+            configured_lower = [g.lower() for g in self.groups]
+            for ug in raw_unread:
+                ug_lower = ug.lower().strip()
+                # Skip obvious garbage
+                if "unread" in ug_lower or "message" in ug_lower:
+                    continue
+                if ug_lower == "whatsapp" or len(ug_lower) < 3:
+                    continue
+                # Only keep if it matches a configured group
+                for cfg in configured_lower:
+                    if cfg in ug_lower or ug_lower in cfg:
+                        unread_groups.append(ug)
+                        break
             if unread_groups:
-                self.log(f"Groups with unread messages: {unread_groups}")
-            else:
-                self.log("No groups with unread messages.")
+                self.log(f"Groups with unread: {unread_groups}")
 
         for group_name in self.groups:
             if self.stop_event.is_set():
@@ -4969,7 +4983,8 @@ class VidaPayTransferApp(tk.Tk):
 
                             self.log_msg(f"Task {task_idx}/{len(new_tasks)} complete.")
                     else:
-                        self.log_msg("No new transfer requests. Waiting...")
+                        # Don't log every 10s when nothing found — too noisy
+                        pass
                 else:
                     self.log_msg("Monitoring skipped (Desktop mode or no scraper).")
                     break
