@@ -3010,7 +3010,7 @@ class VidaPayTransferApp(tk.Tk):
             width=None,
             tag="save",
         )
-        self.btn_save.grid(row=4, column=0, columnspan=2, pady=6)
+        self.btn_save.grid(row=6, column=0, columnspan=2, pady=6)
 
         map_frame = ttk.LabelFrame(
             self.tab_config, text="Store Name to Account ID Mappings"
