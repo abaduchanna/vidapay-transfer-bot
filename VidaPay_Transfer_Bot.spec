@@ -58,10 +58,12 @@ a = Analysis(
         'selenium.webdriver.edge.webdriver',
         'selenium.webdriver.edge.options',
         'selenium.webdriver.edge.service',
+        # bs4: just declare the top-level package. PyInstaller's built-in
+        # bs4 hook (from _pyinstaller_hooks_contrib) automatically pulls
+        # in the correct builder modules for the installed bs4 version.
+        # Listing 'bs4.builder.html_parser' manually fails because that
+        # module name doesn't exist in modern bs4 (it's _htmlparser).
         'bs4',
-        'bs4.builder',
-        'bs4.builder.html_parser',
-        'bs4.builder._htmlparser',
     ],
     hookspath=[],
     hooksconfig={},
