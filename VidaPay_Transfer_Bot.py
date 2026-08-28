@@ -4207,9 +4207,19 @@ class VidaPayTransferApp(tk.Tk):
         # eliminate the duplicate "Theme / Switch to Dark" button that was
         # appearing alongside the header's sun/moon toggle.
 
-        # ---- Body ----
-        self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        # ---- Body: LEFT (config + controls) | RIGHT (log panel) ----
+        # Two-column layout so the log panel is always visible on the right
+        # side, wide enough to read full log lines while the config tabs and
+        # buttons are on the left.
+        body_frame = tk.Frame(self, bg=self.colors["bg"])
+        body_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        # ── LEFT side: notebook (tabs) + buttons + progress ──
+        left_frame = tk.Frame(body_frame, bg=self.colors["bg"])
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 8))
+
+        self.notebook = ttk.Notebook(left_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
 
         self.tab_config = ttk.Frame(self.notebook)
         self.tab_history = ttk.Frame(self.notebook)
@@ -4224,11 +4234,9 @@ class VidaPayTransferApp(tk.Tk):
         self._build_config_tab()
         self._build_history_tab()
 
-        bottom_frame = tk.Frame(self, bg=self.colors["bg"])
-        bottom_frame.pack(fill=tk.X, padx=20, pady=10)
-
-        ctrl_frame = tk.Frame(bottom_frame, bg=self.colors["bg"])
-        ctrl_frame.pack(fill=tk.X, pady=5)
+        # Controls (Run / Schedule / Stop) below the notebook on the left
+        ctrl_frame = tk.Frame(left_frame, bg=self.colors["bg"])
+        ctrl_frame.pack(fill=tk.X, pady=(8, 5))
 
         self.btn_run = self._make_btn(
             ctrl_frame,
@@ -4264,20 +4272,72 @@ class VidaPayTransferApp(tk.Tk):
         )
         self.btn_stop.pack(side=tk.LEFT, padx=5)
 
+        self.progress = ttk.Progressbar(
+            left_frame, mode="indeterminate"
+        )
+        self.progress.pack(fill=tk.X, pady=(5, 0))
+
+        # ── RIGHT side: log panel (always visible) ──
+        # Wide enough to read full log lines without horizontal scrolling.
+        # Tall enough to see many lines of history at once.
+        log_frame = tk.Frame(body_frame, bg=self.colors["bg"])
+        log_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+        # Log header with label + clear button
+        log_header = tk.Frame(log_frame, bg=self.colors["bg"])
+        log_header.pack(fill=tk.X, pady=(0, 4))
+
+        tk.Label(
+            log_header,
+            text="📋 Activity Log",
+            font=("Segoe UI", 10, "bold"),
+            bg=self.colors["bg"],
+            fg=self.colors.get("text", "#ffffff"),
+        ).pack(side=tk.LEFT)
+
+        # Clear log button
+        def _clear_log():
+            try:
+                self.log_area.delete("1.0", tk.END)
+            except Exception:
+                pass
+
+        clr_btn = tk.Button(
+            log_header,
+            text="Clear",
+            font=("Segoe UI", 8),
+            bg=self.colors.get("panel", "#2a2d3e"),
+            fg=self.colors.get("text", "#ffffff"),
+            activebackground=self.colors.get("red", "#cc3333"),
+            activeforeground="#ffffff",
+            relief=tk.FLAT,
+            padx=8,
+            pady=2,
+            command=_clear_log,
+        )
+        clr_btn.pack(side=tk.RIGHT)
+
+        # Log text area — wider and taller than before, fills the right column
         self.log_area = scrolledtext.ScrolledText(
-            bottom_frame,
-            height=10,
+            log_frame,
+            width=70,  # wider — fits full log lines
             font=("Consolas", 9),
             bg=self.colors["log_bg"],
             fg=self.colors["log_fg"],
             insertbackground=self.colors["log_fg"],
+            wrap=tk.WORD,  # wrap long lines instead of horizontal scroll
         )
-        self.log_area.pack(fill=tk.BOTH, expand=True, pady=5)
+        self.log_area.pack(fill=tk.BOTH, expand=True)
 
-        self.progress = ttk.Progressbar(
-            bottom_frame, mode="indeterminate"
-        )
-        self.progress.pack(fill=tk.X)
+        # Tag for colored log levels (optional — used by log_msg if it
+        # inserts with tags like "INFO", "ERROR", "SUCCESS").
+        try:
+            self.log_area.tag_configure("ERROR", foreground="#ff6b6b")
+            self.log_area.tag_configure("SUCCESS", foreground="#51cf66")
+            self.log_area.tag_configure("WARNING", foreground="#ffd43b")
+            self.log_area.tag_configure("INFO", foreground=self.colors["log_fg"])
+        except Exception:
+            pass
 
         # Copyright footer
         _cbar = tk.Frame(self, bg="#090d26", height=24)
@@ -4643,7 +4703,19 @@ class VidaPayTransferApp(tk.Tk):
         try:
             while True:
                 msg = self.log_queue.get_nowait()
-                self.log_area.insert(tk.END, msg)
+                # Auto-detect log level for colored output.
+                # Looks at the message content for keywords like
+                # "ERROR", "FAILED", "✅", "⚠️", "✋", etc.
+                tag = "INFO"
+                msg_upper = msg.upper()
+                if any(k in msg_upper for k in ("ERROR", "FAILED", "CRITICAL")):
+                    tag = "ERROR"
+                elif any(k in msg for k in ("✅", "SUCCESS", "✓")):
+                    tag = "SUCCESS"
+                elif any(k in msg for k in ("⚠️", "WARNING", "✋", "SKIP")):
+                    tag = "WARNING"
+
+                self.log_area.insert(tk.END, msg, tag)
                 self.log_area.see(tk.END)
         except queue.Empty:
             pass
