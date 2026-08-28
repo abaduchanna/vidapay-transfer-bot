@@ -4037,44 +4037,37 @@ class WhatsAppScraper:
                     f"  [reply-check] Looking for trigger key: "
                     f"'{trigger_key}' in chat text."
                 )
-                # Use the LAST occurrence in case the trigger text also
-                # appears in a quoted reply above the actual trigger.
-                trigger_pos = chat_lower.rfind(trigger_key)
-            else:
-                # Fallback: use the first 30 chars of the snippet
-                trigger_key = snippet_lower.strip()[:30]
-                trigger_pos = chat_lower.rfind(trigger_key)
 
-            if trigger_pos < 0:
-                # Trigger not found — it may have scrolled off.
-                # Scan ALL text for handling phrases (safe choice).
-                self.log(
-                    f"  [reply-check] Trigger not found in chat text. "
-                    f"Scanning ALL text for handling phrases..."
-                )
-                text_to_check = chat_lower
-            else:
-                # Only check text AFTER the trigger message.
-                text_to_check = chat_lower[trigger_pos + len(trigger_key):]
-                self.log(
-                    f"  [reply-check] Trigger found at char {trigger_pos}. "
-                    f"Checking {len(text_to_check)} chars after trigger."
-                )
+            # ── ALWAYS scan ALL text for handling phrases ──
+            # Previous version only checked text AFTER the trigger position.
+            # But when someone replies with a QUOTED message, the chat looks
+            # like:
+            #   ...earlier messages...
+            #   On it                         ← the reply (BEFORE quote)
+            #   > transfer to jewella          ← quoted trigger text
+            #   ...timestamp...
+            #
+            # The bot would find the trigger at the quoted position, then
+            # only check AFTER it — missing the "On it" that came BEFORE.
+            #
+            # Fix: always scan the ENTIRE chat text for handling phrases.
+            # This is the safe choice — better to skip a valid transfer
+            # than to double-handle one because we missed a reply.
+            text_to_check = chat_lower
+            self.log(
+                f"  [reply-check] Scanning ALL {len(text_to_check)} chars "
+                f"of chat text for handling phrases..."
+            )
 
             # ── Check for handling phrases in the relevant text ──
             for phrase in self.REPLY_HANDLING_PHRASES:
                 if phrase in text_to_check:
                     # Found a handling reply — skip this transfer.
-                    # Try to extract the reply text for logging.
+                    # Extract a window of text around the match for logging.
                     phrase_pos = text_to_check.find(phrase)
-                    # Get a window of text around the match for context
                     start = max(0, phrase_pos - 20)
                     end = min(len(text_to_check), phrase_pos + len(phrase) + 40)
-                    if trigger_pos >= 0:
-                        offset = trigger_pos + len(trigger_key)
-                        reply_excerpt = chat_text[offset + start : offset + end].strip()
-                    else:
-                        reply_excerpt = chat_text[start:end].strip()
+                    reply_excerpt = chat_text[start:end].strip()
                     self.log(
                         f"  [reply-check] ✓ Handling reply detected in "
                         f"'{group_name}' (matched: '{phrase}'): "
