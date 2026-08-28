@@ -2134,7 +2134,7 @@ class VidapayTransferSystem:
                 try:
                     self.wait.until(
                         EC.presence_of_element_located(
-                            (By.ID, "ctl00_MainContent_rcbAccount_Input")
+                            (By.ID, "rcbAccount_Input")
                         )
                     )
                 except Exception:
@@ -2164,7 +2164,7 @@ class VidapayTransferSystem:
                             # Wait again for the Account input
                             self.wait.until(
                                 EC.presence_of_element_located(
-                                    (By.ID, "ctl00_MainContent_rcbAccount_Input")
+                                    (By.ID, "rcbAccount_Input")
                                 )
                             )
                     except Exception:
@@ -2288,7 +2288,7 @@ class VidapayTransferSystem:
                 # needs to initialize.
                 account_input = WebDriverWait(self.driver, 20).until(
                     EC.element_to_be_clickable(
-                        (By.ID, "ctl00_MainContent_rcbAccount_Input")
+                        (By.ID, "rcbAccount_Input")
                     )
                 )
             except Exception:
@@ -2350,10 +2350,10 @@ class VidapayTransferSystem:
 
             if not csv_uploaded:
                 sim_input = self.driver.find_element(
-                    By.ID, "MainContent_txtSimEntry"
+                    By.ID, "txtSimEntry"
                 )
                 add_btn = self.driver.find_element(
-                    By.ID, "MainContent_btnAddSimEntry"
+                    By.ID, "btnAddSimEntry"
                 )
 
                 for imei in imeis:
@@ -2383,10 +2383,10 @@ class VidapayTransferSystem:
                                 f"re-fetching..."
                             )
                             sim_input = self.driver.find_element(
-                                By.ID, "MainContent_txtSimEntry"
+                                By.ID, "txtSimEntry"
                             )
                             add_btn = self.driver.find_element(
-                                By.ID, "MainContent_btnAddSimEntry"
+                                By.ID, "btnAddSimEntry"
                             )
                             time.sleep(1)
                     if not added:
@@ -2416,7 +2416,7 @@ class VidapayTransferSystem:
             # 4. Proceed to Next (force-enable first — VidaPay leaves the
             #    button disabled until the page's own JS flips it, but we've
             #    already populated everything we need).
-            next_btn = self.driver.find_element(By.ID, "MainContent_btnNext")
+            next_btn = self.driver.find_element(By.ID, "btnNext")
             try:
                 self.driver.execute_script(
                     "arguments[0].removeAttribute('disabled');", next_btn
@@ -2526,7 +2526,7 @@ class VidapayTransferSystem:
         # Click Upload button (force-enable first, same pattern as Next).
         try:
             upload_btn = self.driver.find_element(
-                By.ID, "MainContent_btnUploadFile"
+                By.ID, "btnUploadFile"
             )
             try:
                 self.driver.execute_script(
@@ -2552,16 +2552,26 @@ class VidapayTransferSystem:
         (the IMEI was added cleanly).
         """
         # Look for the Invalid Sim icon that VidaPay renders next to a bad
-        # row.
+        # row.  Try multiple selectors — the ID pattern includes the row
+        # index (ctl00, ctl01, ctl02, ...) so we can't use a fixed ID.
+        error_img = None
         try:
+            # Strategy 1: by src attribute (most reliable)
             error_img = self.driver.find_element(
                 By.CSS_SELECTOR,
                 "img[src*='Invalid%20Sim.png'], img[src*='Invalid']",
             )
-            if not error_img:
-                return False
         except Exception:
-            # No error image — IMEI was added successfully.
+            try:
+                # Strategy 2: by ID pattern (ctl00_MainContent_rgSims_ctl00_ctlNN_imgErrorMessageImageUrl)
+                error_img = self.driver.find_element(
+                    By.CSS_SELECTOR,
+                    "img[id*='imgErrorMessageImageUrl']",
+                )
+            except Exception:
+                pass
+
+        if not error_img:
             return False
 
         # Click the error image to open the error dialog.
