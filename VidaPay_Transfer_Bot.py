@@ -2262,20 +2262,39 @@ class VidapayTransferSystem:
                 })
                 return False
 
-            # Also verify the account input exists with a SHORT timeout
-            # (5s instead of 30s).  If it's not there in 5s, the page
-            # didn't load properly — bail out instead of waiting 30s and
-            # risking a GetHandleVerifier crash.
+            # Also verify the account input exists.  VidaPay's ASP.NET page
+            # can take 25-30s to fully render (RadComboBox controls load
+            # asynchronously), so we use a 45s timeout.
+            #
+            # We do NOT use the old 30s self.wait.until() because that
+            # triggered the GetHandleVerifier crash on timeout.  Instead
+            # we poll document.readyState first (fast, no crash risk),
+            # then look for the element with explicit error handling.
             try:
-                account_input = WebDriverWait(self.driver, 5).until(
+                # Phase 1: wait for page to finish loading (readyState=complete)
+                for _ in range(60):  # up to 30s (60 x 0.5s)
+                    try:
+                        ready = self.driver.execute_script(
+                            "return document.readyState"
+                        )
+                        if ready == "complete":
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
+
+                # Phase 2: wait for the account input to be clickable.
+                # Use 20s — the page is loaded, the RadComboBox just
+                # needs to initialize.
+                account_input = WebDriverWait(self.driver, 20).until(
                     EC.element_to_be_clickable(
                         (By.ID, "ctl00_MainContent_rcbAccount_Input")
                     )
                 )
             except Exception:
                 self.log(
-                    "⚠️ Account input not found within 5s — page may not "
-                    "have loaded properly. Aborting transfer."
+                    "⚠️ Account input not found — page may not have loaded "
+                    "properly or VidaPay is slow. Aborting transfer."
                 )
                 if not hasattr(self, "_error_screenshots"):
                     self._error_screenshots = []
@@ -3853,6 +3872,30 @@ class WhatsAppScraper:
         "already transferred",
         "already sent",
         "done already",
+        # Additional common reply variants
+        "working on it",
+        "working on",
+        "on it now",
+        "doing now",
+        "doing it now",
+        "will do it",
+        "i'll do it",
+        "ill do it",
+        "let me handle",
+        "i'll handle",
+        "ill handle",
+        "i'll take care",
+        "ill take care",
+        "i'll check",
+        "ill check",
+        "checking now",
+        "check now",
+        "received",
+        "noted",
+        "copy that",
+        "roger",
+        "ack",
+        "acknowledged",
     ]
 
     def check_for_reply_in_group(self, group_name, trigger_text_snippet):
@@ -3962,17 +4005,21 @@ class WhatsAppScraper:
             # part from the snippet — this is more reliable than using the
             # full snippet (which includes sender name + phone number that
             # may not match exactly in the re-scanned text).
+            #
+            # Capture up to 4 words after "transfer to" / "t to" so multi-
+            # word store names like "New Colfax" or "N 35th Store" are
+            # matched correctly (old regex only caught the first word).
             import re as _re
             trigger_key = ""
             for pattern in [
-                r'(transfer to \S+)',
-                r'(t to \S+)',
-                r'(trf to \S+)',
-                r'(tt\. t t \S+)',
+                r'(transfer to \S+(?:\s+\S+){0,3})',
+                r'(t to \S+(?:\s+\S+){0,3})',
+                r'(trf to \S+(?:\s+\S+){0,3})',
+                r'(tt\.?\s*t\s*t \S+(?:\s+\S+){0,3})',
             ]:
                 m = _re.search(pattern, snippet_lower)
                 if m:
-                    trigger_key = m.group(1)
+                    trigger_key = m.group(1).strip()
                     break
 
             if trigger_key:
