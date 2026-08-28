@@ -2239,12 +2239,54 @@ class VidapayTransferSystem:
             self._error_screenshots = []
 
         try:
-            # 1. Enter Target Account ID
-            account_input = self.wait.until(
-                EC.element_to_be_clickable(
-                    (By.ID, "ctl00_MainContent_rcbAccount_Input")
+            # 0. Pre-flight check: verify we're on the Reassignment Tool page
+            # BEFORE waiting for the account input.  If we're on the wrong
+            # page (e.g. login page), the 30s WebDriverWait would time out
+            # and msedgedriver crashes with GetHandleVerifier when responding
+            # to the timeout query.
+            try:
+                current_url = self.driver.current_url or ""
+            except Exception:
+                current_url = ""
+            if "InventoryReassignmentTool" not in current_url:
+                self.log(
+                    f"⚠️ Wrong page for transfer: '{current_url[:80]}'. "
+                    f"Expected Inventory Reassignment Tool. Aborting."
                 )
-            )
+                if not hasattr(self, "_error_screenshots"):
+                    self._error_screenshots = []
+                self._error_screenshots.append({
+                    "imei": "N/A",
+                    "error": f"Wrong page: {current_url[:100]}",
+                    "screenshot": None,
+                })
+                return False
+
+            # Also verify the account input exists with a SHORT timeout
+            # (5s instead of 30s).  If it's not there in 5s, the page
+            # didn't load properly — bail out instead of waiting 30s and
+            # risking a GetHandleVerifier crash.
+            try:
+                account_input = WebDriverWait(self.driver, 5).until(
+                    EC.element_to_be_clickable(
+                        (By.ID, "ctl00_MainContent_rcbAccount_Input")
+                    )
+                )
+            except Exception:
+                self.log(
+                    "⚠️ Account input not found within 5s — page may not "
+                    "have loaded properly. Aborting transfer."
+                )
+                if not hasattr(self, "_error_screenshots"):
+                    self._error_screenshots = []
+                self._error_screenshots.append({
+                    "imei": "N/A",
+                    "error": "Account input not found (page load timeout)",
+                    "screenshot": None,
+                })
+                return False
+
+            # 1. Enter Target Account ID
             account_input.clear()
             account_input.send_keys(target_account_id)
             time.sleep(1)
