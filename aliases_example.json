@@ -1,0 +1,39 @@
+{
+  "aliases": {
+    "windermere": "166839_GFH Telecom LLC",
+    "windermere store": "166839_GFH Telecom LLC",
+    "windermere location": "166839_GFH Telecom LLC",
+    "downtown": "166840_GFH Telecom LLC",
+    "downtown houston": "166840_GFH Telecom LLC",
+    "dt": "166840_GFH Telecom LLC",
+    "houston": "166841_GFH Telecom LLC",
+    "houston main": "166841_GFH Telecom LLC",
+    "houston tx": "166841_GFH Telecom LLC",
+    "arizona": "166842_GFH Telecom LLC",
+    "phoenix": "166843_GFH Telecom LLC",
+    "phoenix az": "166843_GFH Telecom LLC",
+    "mesa": "166844_GFH Telecom LLC",
+    "scottsdale": "166845_GFH Telecom LLC",
+    "dallas": "166846_GFH Telecom LLC",
+    "dallas tx": "166846_GFH Telecom LLC",
+    "austin": "166847_GFH Telecom LLC",
+    "san antonio": "166848_GFH Telecom LLC",
+    "corpus christi": "166849_GFH Telecom LLC",
+    "colfax": "166850_GFH Telecom LLC",
+    "new colfax": "166851_GFH Telecom LLC",
+    "fry": "166852_GFH Telecom LLC",
+    "fry rd": "166852_GFH Telecom LLC",
+    "mall": "166853_GFH Telecom LLC",
+    "mall location": "166853_GFH Telecom LLC",
+    "westside": "166854_GFH Telecom LLC",
+    "east": "166855_GFH Telecom LLC",
+    "east location": "166855_GFH Telecom LLC",
+    "north": "166856_GFH Telecom LLC",
+    "south": "166857_GFH Telecom LLC"
+  },
+  "metadata": {
+    "total_stores": 30,
+    "last_updated": "2026-01-15T15:30:00Z",
+    "note": "Add new stores as needed. Longest match wins in alias resolution."
+  }
+}
