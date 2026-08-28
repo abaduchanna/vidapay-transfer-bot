@@ -4105,71 +4105,26 @@ class WhatsAppScraper:
             self.driver = None
 
     def send_reply(self, group_name, message_text):
-        """Send a reply message to a WhatsApp group.
-        Switches to the WhatsApp Web tab, searches for the group,
-        types the message, and presses Enter."""
-        if not self.driver:
-            self.log("No driver available for WhatsApp reply.")
-            return False
+        """DISABLED — bot no longer sends ANY text to WhatsApp.
 
-        try:
-            # Switch to WhatsApp Web tab
-            self._focus_wa_window()
-            time.sleep(1)
+        The user explicitly requested: 'stop bot to send text to whatsapp.
+        no text never.'
 
-            # Search for the group
-            search_box = self._find_search_box()
-            if not search_box:
-                self.log("Could not find search box for reply.")
-                return False
+        This method is kept as a no-op so all existing call sites continue
+        to work without errors, but NO message is ever typed or sent.
 
-            self.driver.execute_script("arguments[0].focus();", search_box)
-            time.sleep(0.3)
-            search_box.send_keys(Keys.CONTROL + "a")
-            search_box.send_keys(Keys.BACKSPACE)
-            time.sleep(0.5)
-            search_box.send_keys(group_name)
-            time.sleep(2.5)
-            search_box.send_keys(Keys.ENTER)
-            time.sleep(2)
+        The bot STILL checks for replies (check_for_reply_in_group is
+        unaffected) so it will still skip transfers when someone replies
+        'on it' / 'doing' / etc.  It just won't send any text itself.
 
-            # Find the message input box (contenteditable div)
-            msg_box = None
-            for selector in [
-                "div[contenteditable='true'][data-tab='10']",
-                "div[contenteditable='true'][role='textbox']",
-                "footer div[contenteditable='true']",
-                "div[contenteditable='true']",
-            ]:
-                try:
-                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    for el in elements:
-                        if el.is_displayed():
-                            msg_box = el
-                            break
-                    if msg_box:
-                        break
-                except Exception:
-                    continue
-
-            if not msg_box:
-                self.log("Could not find message input box for reply.")
-                return False
-
-            # Type the message and send
-            msg_box.click()
-            time.sleep(0.5)
-            msg_box.send_keys(message_text)
-            time.sleep(0.5)
-            msg_box.send_keys(Keys.ENTER)
-            time.sleep(1)
-
-            self.log(f"Reply sent to '{group_name}': {message_text[:80]}")
-            return True
-
-        except Exception as e:
-            self.log(f"Failed to send WhatsApp reply: {e}")
-            return False
+        To re-enable WhatsApp sending in the future, restore the original
+        implementation from git history.
+        """
+        self.log(
+            f"WhatsApp text sending is DISABLED — would have sent to "
+            f"'{group_name}': {message_text[:80]}"
+        )
+        return True  # return True so callers don't treat it as an error
 
 
 # ============================================================================
