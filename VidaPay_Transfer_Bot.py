@@ -2729,7 +2729,7 @@ class VidapayTransferSystem:
 
 
 class WhatsAppScraper:
-    def __init__(self, raw_groups, log_callback, stop_event):
+    def __init__(self, raw_groups, log_callback, stop_event, reply_phrases_str=""):
         if isinstance(raw_groups, str):
             self.groups = [g.strip() for g in raw_groups.split(",") if g.strip()]
         else:
@@ -2740,6 +2740,18 @@ class WhatsAppScraper:
         # Whether this scraper launched its own browser (True) or is reusing
         # the browser session already opened for VidaPay (False).
         self.owns_driver = False
+
+        # Parse reply phrases from the comma-separated string provided by
+        # the GUI.  These override the hardcoded REPLY_HANDLING_PHRASES
+        # when checking for handling replies.
+        if reply_phrases_str and reply_phrases_str.strip():
+            self.reply_phrases = [
+                p.strip().lower() for p in reply_phrases_str.split(",")
+                if p.strip()
+            ]
+        else:
+            # Fallback to the default hardcoded list
+            self.reply_phrases = list(self.REPLY_HANDLING_PHRASES)
 
     def _wa_page_state(self):
         """Return a string describing what WhatsApp Web is showing right now.
@@ -3334,6 +3346,7 @@ class WhatsAppScraper:
         else:
             trigger_words = ["transfer"]  # default fallback
         self.log(f"Trigger words: {trigger_words}")
+        self.log(f"Reply phrases (skip transfer): {self.reply_phrases}")
 
         # Make sure the WhatsApp tab is the active one before scraping
         self._focus_wa_window()
@@ -4060,7 +4073,9 @@ class WhatsAppScraper:
             )
 
             # ── Check for handling phrases in the relevant text ──
-            for phrase in self.REPLY_HANDLING_PHRASES:
+            # Use the user-configured reply phrases (from the GUI field)
+            # instead of the hardcoded defaults.
+            for phrase in self.reply_phrases:
                 if phrase in text_to_check:
                     # Found a handling reply — skip this transfer.
                     # Extract a window of text around the match for logging.
@@ -4433,6 +4448,36 @@ class VidaPayTransferApp(tk.Tk):
             row=4, column=0, columnspan=2, padx=10, pady=2, sticky=tk.W
         )
 
+        # ── Reply detection phrases ──
+        # When someone replies to a transfer request with one of these
+        # phrases, the bot SKIPS the transfer (lets the human handle it).
+        # Comma-separated, case-insensitive substring match.
+        tk.Label(
+            bot_frame,
+            text="Reply phrases to SKIP transfer (comma-separated):"
+        ).grid(
+            row=4, column=2, padx=10, pady=(6, 2), sticky=tk.W
+        )
+        self.txt_reply_phrases = scrolledtext.ScrolledText(
+            bot_frame, width=35, height=3, font=("Segoe UI", 9)
+        )
+        # Default phrases cover common ways team members acknowledge
+        # a transfer request.
+        _default_reply_phrases = (
+            "on it, doing, on the way, will do, handling, "
+            "got it, got this, working on it, working on, "
+            "i'll do it, ill do it, let me handle, "
+            "received, noted, copy that, already done, "
+            "already transferred, already sent"
+        )
+        saved_replies = self.config_data.get(
+            "reply_phrases", _default_reply_phrases
+        )
+        self.txt_reply_phrases.insert(tk.END, saved_replies)
+        self.txt_reply_phrases.grid(
+            row=4, column=3, columnspan=2, padx=10, pady=2, sticky=tk.W
+        )
+
         tk.Label(bot_frame, text="Schedule (HH:MM):").grid(
             row=5, column=0, padx=10, pady=5, sticky=tk.W
         )
@@ -4611,6 +4656,9 @@ class VidaPayTransferApp(tk.Tk):
         self.config_data["whatsapp_mode"] = self.wa_mode_var.get()
         self.config_data["trigger_words"] = (
             self.txt_trigger_words.get("1.0", tk.END).strip()
+        )
+        self.config_data["reply_phrases"] = (
+            self.txt_reply_phrases.get("1.0", tk.END).strip()
         )
         self.config_data["transfer_schedule"] = (
             self.entry_schedule.get().strip()
@@ -5438,9 +5486,10 @@ class VidaPayTransferApp(tk.Tk):
         self.ui_state_running()
         wa_mode = self.wa_mode_var.get()
         trigger_words_str = self.txt_trigger_words.get("1.0", tk.END).strip()
+        reply_phrases_str = self.txt_reply_phrases.get("1.0", tk.END).strip()
         threading.Thread(
             target=self._bot_workflow,
-            args=(acc, usr, pwd, wa_groups_str, wa_mode, trigger_words_str),
+            args=(acc, usr, pwd, wa_groups_str, wa_mode, trigger_words_str, reply_phrases_str),
             daemon=True,
         ).start()
 
@@ -5529,7 +5578,7 @@ class VidaPayTransferApp(tk.Tk):
 
         self.log_msg(f"Task complete: {task['store']} → {status}.")
 
-    def _bot_workflow(self, crm_acc, crm_usr, crm_pwd, wa_groups_str, wa_mode="web", trigger_words_str=""):
+    def _bot_workflow(self, crm_acc, crm_usr, crm_pwd, wa_groups_str, wa_mode="web", trigger_words_str="", reply_phrases_str=""):
         self.log_msg("=== Starting Transfer Bot Workflow ===")
         wa_scraper = None
         crm_system = None
@@ -5620,7 +5669,8 @@ class VidaPayTransferApp(tk.Tk):
             else:
                 self.log_msg("WhatsApp mode: WhatsApp Web (browser tab)")
                 wa_scraper = WhatsAppScraper(
-                    wa_groups_str, self.log_msg, self.stop_event
+                    wa_groups_str, self.log_msg, self.stop_event,
+                    reply_phrases_str
                 )
                 # Reuse the WhatsApp Web tab we already opened (don't open another)
                 if wa_tab_handle:
