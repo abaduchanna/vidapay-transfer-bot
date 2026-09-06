@@ -3708,7 +3708,6 @@ class WhatsAppScraper:
                                 if imeis:
                                     self.log(f"Extracted {len(imeis)} IMEIs via OCR from message below (index {check_idx}).")
                                     break
-                                    break
                         
                         if imeis:
                             transfer_tasks.append({
@@ -3727,7 +3726,16 @@ class WhatsAppScraper:
                                 "No valid IMEIs found in trigger message or adjacent messages."
                             )
 
-                search_box.send_keys(Keys.ESCAPE)
+                # Send ESC to close the search/chat without relying on the
+                # original search_box reference, which is stale once the chat
+                # opens (DOM rebuilds after send_keys(ENTER)).
+                try:
+                    self.driver.execute_script(
+                        "document.dispatchEvent("
+                        "new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));"
+                    )
+                except Exception:
+                    pass
                 time.sleep(1)
 
             except Exception as e:
@@ -5496,6 +5504,18 @@ class VidaPayTransferApp(tk.Tk):
                 len(task["imeis"]), "FAILED — Navigation error",
             )
             return
+
+        # navigate_to_transfer_tool may re-attach the driver on retry, creating
+        # a new EdgeDriver instance on crm_system.driver.  wa_scraper.driver
+        # is the same shared session but Python assignment doesn't update it
+        # automatically — sync it here so WhatsApp scans keep working.
+        if wa_scraper is not None and wa_scraper.driver is not crm_system.driver:
+            wa_scraper.driver = crm_system.driver
+            try:
+                from selenium.webdriver.support.ui import WebDriverWait as _WDW
+                wa_scraper.wait = _WDW(crm_system.driver, 30)
+            except Exception:
+                pass
 
         # Clear any previous error screenshots
         if hasattr(crm_system, '_error_screenshots'):
