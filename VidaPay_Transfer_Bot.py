@@ -4848,27 +4848,9 @@ class VidaPayTransferApp(tk.Tk):
         self._update_theme_btn()
 
     def _update_theme_btn(self):
-        """Show which theme the button will switch to and style it."""
-        current = self._resolve_theme()
-        next_theme = "dark" if current == "light" else "light"
+        """Sync the header theme toggle button emoji after a theme change."""
         try:
-            self.theme_btn.config(
-                text="Switch to Dark" if next_theme == "dark" else "Switch to Light",
-            )
-            # Ink the button to match the current theme navbar accent.
-            btn_style = ttk.Style()
-            btn_style.configure(
-                "ThemeToggle.TButton",
-                background=self.colors["navy"],
-                foreground="#ffffff",
-                bordercolor=self.colors["navy"],
-                focusthickness=0,
-            )
-            btn_style.map(
-                "ThemeToggle.TButton",
-                background=[("active", self.colors["red"])],
-            )
-            self.theme_btn.configure(style="ThemeToggle.TButton")
+            self.header_mgr.update_button_text()
         except Exception:
             pass
 

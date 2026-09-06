@@ -48,7 +48,7 @@ class FixedHeaderManager:
 
         # LEFT: Logo + divider (packed together so divider isn't covered by title)
         self.left_frame = tk.Frame(self.header_frame, bg=self.BRAND_NAVY)
-        self.left_frame.pack(side=tk.LEFT, padx=(18, 0), pady=9)
+        self.left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(18, 0), pady=9)
 
         self.logo_label = tk.Label(
             self.left_frame,
@@ -110,15 +110,22 @@ class FixedHeaderManager:
             try:
                 from PIL import Image, ImageTk
                 img = Image.open(logo_path)
-                if img.mode not in ("RGBA", "LA"):
-                    img = img.convert("RGBA")
                 img.thumbnail((190, 72), _get_resampling())
-                self.photo = ImageTk.PhotoImage(img)
+                # Composite onto navy background so logos without transparency
+                # don't show as a white/grey box on the dark header.
+                bg = Image.new("RGBA", img.size, self.BRAND_NAVY)
+                if img.mode == "RGBA":
+                    bg.paste(img, mask=img.split()[3])
+                elif img.mode == "LA":
+                    bg.paste(img.convert("RGBA"), mask=img.split()[1])
+                else:
+                    bg.paste(img.convert("RGBA"))
+                self.photo = ImageTk.PhotoImage(bg)
                 self.logo_label.configure(image=self.photo, text="")
                 return
-            except:
+            except Exception:
                 pass
-        
+
         # Fallback to text
         self.logo_label.configure(text=text)
     
@@ -140,19 +147,20 @@ class FixedHeaderManager:
             self.right_frame,
             text="☀️" if theme_manager.current_theme == "dark" else "🌙",
             command=toggle_and_callback,
-            bg=self.BRAND_RED,
+            bg=self.BRAND_NAVY,
             fg="white",
-            activebackground="#c9401a",
+            activebackground=self.BRAND_RED,
             activeforeground="white",
             relief=tk.FLAT,
             padx=12,
-            pady=8,
+            pady=6,
             width=3,
-            font=("Segoe UI", 9, "bold"),
+            font=("Segoe UI Emoji", 13),
             cursor="hand2",
             highlightthickness=0,
             borderwidth=0
         )
+        self.theme_toggle_btn._tag = "header"
         self.theme_toggle_btn.pack(side=tk.TOP, pady=5)
     
     def add_copyright(self, theme_manager):
