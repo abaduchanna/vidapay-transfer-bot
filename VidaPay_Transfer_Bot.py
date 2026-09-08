@@ -4361,6 +4361,22 @@ class VidaPayTransferApp(tk.Tk):
         )
         clr_btn.pack(side=tk.RIGHT)
 
+        # Verbose toggle — when OFF, suppress setup/navigation/scan noise
+        self.verbose_logging = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            log_header,
+            text="Verbose",
+            variable=self.verbose_logging,
+            font=("Segoe UI", 8),
+            bg=self.colors.get("bg", "#1e2130"),
+            fg=self.colors.get("text", "#ffffff"),
+            activebackground=self.colors.get("bg", "#1e2130"),
+            activeforeground=self.colors.get("text", "#ffffff"),
+            selectcolor=self.colors.get("panel", "#2a2d3e"),
+            relief=tk.FLAT,
+            borderwidth=0,
+        ).pack(side=tk.RIGHT, padx=(0, 6))
+
         # Log text area — wider and taller than before, fills the right column
         self.log_area = scrolledtext.ScrolledText(
             log_frame,
@@ -4771,7 +4787,61 @@ class VidaPayTransferApp(tk.Tk):
 
     # --- Logging & UI Updates ---
 
+    # Substrings that indicate setup/navigation/scan chatter — suppressed
+    # when verbose logging is OFF.
+    _VERBOSE_ONLY = (
+        "starting edge browser",
+        "navigating to vidapay login",
+        "account id entered",
+        "username entered",
+        "password entered",
+        "login button clicked",
+        "enter key submitted",
+        "already logged in",
+        "sign-in state:",
+        "page detected",
+        "sign-in flow timed out",
+        "navigating to inventory",
+        "navigation attempt",
+        "retrying in",
+        "re-attached to edge",
+        "re-attach failed",
+        "opened new tab via",
+        "new tab handle detected",
+        "switched to new crm tab",
+        "switched to new tab via",
+        "switched back to",
+        "new_window fallback",
+        "current url:",
+        "searching for group",
+        "bs4 extraction",
+        "using selector:",
+        "js text walker",
+        "text blocks via js",
+        "wa page state:",
+        "whatsapp initialization",
+        "starting whatsapp web",
+        "notification setting",
+        "notification settings check",
+        "closed temp crm tab",
+        "navigated to main panel",
+        "re-login...",
+        "opening whatsapp web in a second tab",
+        "whatsapp mode:",
+        "failed to load whatsapp web",
+        "failed to open whatsapp web",
+        "could not open the edge",
+    )
+
     def log_msg(self, msg):
+        try:
+            verbose = self.verbose_logging.get()
+        except Exception:
+            verbose = True
+        if not verbose:
+            lower = msg.lower()
+            if any(p in lower for p in self._VERBOSE_ONLY):
+                return
         self.log_queue.put(
             f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n"
         )
