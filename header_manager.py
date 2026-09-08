@@ -62,9 +62,12 @@ class FixedHeaderManager:
         self.logo_label.pack(side=tk.LEFT)
 
         # Red vertical divider — inside left_frame so the title's
-        # place(relwidth=1.0) can't cover it
-        self.divider_frame = tk.Frame(self.left_frame, bg=self.BRAND_RED, width=3)
-        self.divider_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(14, 0), pady=3)
+        # place(relwidth=1.0) can't cover it.
+        # Explicit height + pack_propagate(False) required: an empty Frame
+        # collapses to zero height without children even with fill=tk.Y.
+        self.divider_frame = tk.Frame(self.left_frame, bg=self.BRAND_RED, width=3, height=66)
+        self.divider_frame.pack_propagate(False)
+        self.divider_frame.pack(side=tk.LEFT, padx=(14, 0), pady=3)
         self.divider_frame._tag = "header"
 
         # RIGHT: pack BEFORE center so toggle anchors right and center truly fills middle
