@@ -2141,27 +2141,8 @@ class VidapayTransferSystem:
                     # If the Account input isn't found, we might be on an
                     # Application Error page.  Check for that and recover.
                     try:
-                        error_el = self.driver.find_element(
-                            By.CSS_SELECTOR, ".error-container, .error-title"
-                        )
-                        if error_el and error_el.is_displayed():
-                            self.log(
-                                "⚠️ VidaPay Application Error detected. "
-                                "Navigating to Main Panel via JS..."
-                            )
-                            self.driver.execute_script(
-                                "window.location.href = "
-                                "'https://www.vidapaycrm.com/Main%20Panel.aspx';"
-                            )
-                            time.sleep(3)
-                            self._dismiss_pending_alerts()
-                            # Now navigate to the Transfer Tool via JS
-                            self.driver.execute_script(
-                                f"window.location.href = '{TARGET_URL}';"
-                            )
-                            time.sleep(3)
-                            self._dismiss_pending_alerts()
-                            # Wait again for the Account input
+                        if self._recover_from_application_error(target_url=TARGET_URL):
+                            # Wait again for the Account input after recovery
                             self.wait.until(
                                 EC.presence_of_element_located(
                                     (By.ID, "rcbAccount_Input")
@@ -2680,6 +2661,40 @@ class VidapayTransferSystem:
                 "screenshot": screenshot_path,
             }
         )
+        return True
+
+    def _recover_from_application_error(self, target_url=None):
+        """If the current page shows <div class='error-title'>Application Error</div>,
+        navigate to https://www.vidapaycrm.com/ to re-enter, then optionally
+        continue to target_url. Returns True if error was detected and recovery
+        was attempted, False if no error page found."""
+        try:
+            error_el = self.driver.find_element(
+                By.CSS_SELECTOR, ".error-container, .error-title"
+            )
+            if not (error_el and error_el.is_displayed()):
+                return False
+        except Exception:
+            return False
+
+        self.log(
+            "⚠️ VidaPay Application Error detected. "
+            "Navigating to https://www.vidapaycrm.com/ to re-login..."
+        )
+        try:
+            self.driver.execute_script(
+                "window.location.href = 'https://www.vidapaycrm.com/';"
+            )
+            time.sleep(4)
+            self._dismiss_pending_alerts()
+            if target_url:
+                self.driver.execute_script(
+                    f"window.location.href = '{target_url}';"
+                )
+                time.sleep(4)
+                self._dismiss_pending_alerts()
+        except Exception as err:
+            self.log(f"Application Error recovery failed: {err}")
         return True
 
     def _navigate_back_to_main_panel(self):
