@@ -173,8 +173,6 @@ PAGE_LOAD_TIMEOUT = 90
 WAIT_FOR_REPLY_SECONDS = 30
 # Re-check interval during the wait period.
 REPLY_CHECK_INTERVAL_SECONDS = 15
-# The message the bot sends to claim a transfer when no human has replied.
-BOT_CLAIM_REPLY = "on it"
 
 # Human-verification wait: Cloudflare Turnstile / reCAPTCHA auto-solver loop
 # polls every few seconds; 30 s is the upper bound before giving up.
@@ -5883,13 +5881,19 @@ class VidaPayTransferApp(tk.Tk):
                         f"{'='*60}"
                     )
 
-                    if wa_scraper and wa_mode != "desktop":
+                    # Determine claim reply from UI field (first non-empty line).
+                    _claim_phrases = [
+                        p.strip()
+                        for p in reply_phrases_str.splitlines()
+                        if p.strip()
+                    ]
+                    _claim_reply = _claim_phrases[0] if _claim_phrases else ""
+
+                    if wa_scraper and wa_mode != "desktop" and _claim_reply:
                         try:
-                            wa_scraper.send_reply(
-                                task["group"], BOT_CLAIM_REPLY
-                            )
+                            wa_scraper.send_reply(task["group"], _claim_reply)
                             self.log_msg(
-                                f"Sent claim reply \"{BOT_CLAIM_REPLY}\" to "
+                                f"Sent claim reply \"{_claim_reply}\" to "
                                 f"'{task['group']}'."
                             )
                             time.sleep(2)
@@ -5911,6 +5915,10 @@ class VidaPayTransferApp(tk.Tk):
                                 f"Could not send claim reply: {claim_err}. "
                                 f"Proceeding with transfer anyway."
                             )
+                    elif not _claim_reply:
+                        self.log_msg(
+                            "Claim reply field empty — claiming transfer without sending message."
+                        )
 
                     self._process_one_task(
                         task, crm_system, wa_scraper, wa_mode
