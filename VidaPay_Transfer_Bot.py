@@ -3636,21 +3636,14 @@ class WhatsAppScraper:
                         
                         # Step 1: Try extracting IMEIs from THIS message's text
                         imeis = self._extract_imeis_from_text(text_content)
-                        
+
                         if imeis:
                             self.log(f"Extracted {len(imeis)} IMEIs from trigger message text.")
-                        else:
-                            # Step 2: Try OCR on THIS message (might have an image)
-                            img_path = os.path.join(
-                                os.environ.get("TEMP", ""), f"wa_msg_{msg_idx}.png"
-                            )
-                            msg.screenshot(img_path)
-                            imeis = self._extract_imeis_from_image(img_path)
-                            if imeis:
-                                self.log(f"Extracted {len(imeis)} IMEIs via OCR from trigger message image.")
-                        
-                        # Also check for <img> tags inside the trigger message
-                        # (WhatsApp images are loaded as blob: URLs)
+
+                        # Step 2: Try downloading blob: image(s) from the message
+                        # (full-resolution, better OCR than screenshotting the bubble).
+                        # Do this BEFORE the fallback screenshot — captioned-image
+                        # messages have text in msg.text but the IMEI is in the photo.
                         if not imeis:
                             try:
                                 imeis = self._extract_imeis_from_msg_images(msg)
@@ -3658,6 +3651,16 @@ class WhatsAppScraper:
                                     self.log(f"Extracted {len(imeis)} IMEIs from trigger message images.")
                             except Exception:
                                 pass
+
+                        # Step 3: Fallback — screenshot the whole message bubble and OCR it
+                        if not imeis:
+                            img_path = os.path.join(
+                                os.environ.get("TEMP", ""), f"wa_msg_{msg_idx}.png"
+                            )
+                            msg.screenshot(img_path)
+                            imeis = self._extract_imeis_from_image(img_path)
+                            if imeis:
+                                self.log(f"Extracted {len(imeis)} IMEIs via OCR from trigger message screenshot.")
                         
                         if not imeis:
                             # Step 3: Check messages ABOVE (previous messages)
@@ -3780,22 +3783,22 @@ class WhatsAppScraper:
 
     def _extract_imeis_from_image(self, img_path):
         try:
-            # Preprocess image for better OCR accuracy
             img = Image.open(img_path)
             img = img.convert("L")  # grayscale
             img = img.resize(
                 (img.width * 2, img.height * 2), Image.Resampling.LANCZOS
             )
 
-            custom_config = r"--oem 3 --psm 6"
-            text = pytesseract.image_to_string(img, config=custom_config)
+            all_imeis = set()
+            # psm 6 = uniform block of text (good for clean screenshots)
+            # psm 11 = sparse text (good for product labels with IMEI printed on box)
+            for psm in (6, 11):
+                text = pytesseract.image_to_string(img, config=f"--oem 3 --psm {psm}")
+                cleaned = re.sub(r"[\s\-\.]+", "", text)
+                all_imeis.update(re.findall(r"(?:35|01)\d{13}", cleaned))
+                all_imeis.update(re.findall(r"\b(?:35|01)\d{13}\b", text))
 
-            # Search both stripped and raw text
-            cleaned = re.sub(r"[\s\-\.]+", "", text)
-            imeis_from_cleaned = re.findall(r"(?:35|01)\d{13}", cleaned)
-            imeis_from_raw = re.findall(r"\b(?:35|01)\d{13}\b", text)
-            all_imeis = list(set(imeis_from_cleaned + imeis_from_raw))
-            return all_imeis
+            return list(all_imeis)
         except Exception as e:
             self.log(f"OCR Error: {e}")
             return []
@@ -3827,25 +3830,25 @@ class WhatsAppScraper:
                     )
                     
                     if src.startswith("blob:"):
-                        # Blob URLs need to be fetched via JS
-                        img_data = self.driver.execute_script("""
-                            return new Promise((resolve, reject) => {
-                                const xhr = new XMLHttpRequest();
-                                xhr.open('GET', arguments[0], true);
-                                xhr.responseType = 'blob';
-                                xhr.onload = function() {
-                                    const reader = new FileReader();
-                                    reader.onloadend = function() {
-                                        resolve(reader.result);
-                                    };
-                                    reader.readAsDataURL(xhr.response);
+                        # execute_script() does NOT await Promises — must use
+                        # execute_async_script() with a callback so the driver
+                        # blocks until the FileReader finishes.
+                        img_data = self.driver.execute_async_script("""
+                            var callback = arguments[arguments.length - 1];
+                            var xhr = new XMLHttpRequest();
+                            xhr.open('GET', arguments[0], true);
+                            xhr.responseType = 'blob';
+                            xhr.onload = function() {
+                                var reader = new FileReader();
+                                reader.onloadend = function() {
+                                    callback(reader.result);
                                 };
-                                xhr.onerror = reject;
-                                xhr.send();
-                            });
+                                reader.readAsDataURL(xhr.response);
+                            };
+                            xhr.onerror = function() { callback(null); };
+                            xhr.send();
                         """, src)
-                        if img_data and img_data.startswith("data:"):
-                            # Strip the data: prefix
+                        if img_data and isinstance(img_data, str) and img_data.startswith("data:"):
                             header, b64data = img_data.split(",", 1)
                             with open(img_path, "wb") as f:
                                 f.write(base64.b64decode(b64data))
