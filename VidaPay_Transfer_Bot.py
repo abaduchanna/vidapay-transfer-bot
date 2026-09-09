@@ -2227,6 +2227,21 @@ class VidapayTransferSystem:
                 current_url = self.driver.current_url or ""
             except Exception:
                 current_url = ""
+
+            # Recover immediately if already on Application Error page.
+            if "ApplicationError.aspx" in current_url:
+                self.log(
+                    "⚠️ Application Error page at transfer start. Recovering..."
+                )
+                self._recover_from_application_error(
+                    target_url="https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
+                )
+                time.sleep(3)
+                try:
+                    current_url = self.driver.current_url or ""
+                except Exception:
+                    current_url = ""
+
             if "InventoryReassignmentTool" not in current_url:
                 self.log(
                     f"⚠️ Wrong page for transfer: '{current_url[:80]}'. "
@@ -2294,7 +2309,7 @@ class VidapayTransferSystem:
             # 1a. Detect Application Error after account entry and recover.
             try:
                 current_url_after = self.driver.current_url or ""
-                if "ApplicationError" in current_url_after or "Error" in current_url_after:
+                if "ApplicationError.aspx" in current_url_after:
                     self.log(
                         f"⚠️ Application Error after account entry. "
                         f"Recovering and retrying transfer..."
@@ -2686,17 +2701,31 @@ class VidapayTransferSystem:
         return True
 
     def _recover_from_application_error(self, target_url=None):
-        """If the current page shows <div class='error-title'>Application Error</div>,
-        navigate to https://www.vidapaycrm.com/ to re-enter, then optionally
-        continue to target_url. Returns True if error was detected and recovery
-        was attempted, False if no error page found."""
+        """Detect VidaPay Application Error page (by URL or CSS) and recover.
+
+        Detection order:
+        1. URL contains 'ApplicationError.aspx' — reliable, no DOM access needed.
+        2. CSS element .error-container / .error-title visible — fallback.
+
+        Returns True if error was detected and recovery was attempted,
+        False if not on an error page."""
         try:
-            error_el = self.driver.find_element(
-                By.CSS_SELECTOR, ".error-container, .error-title"
-            )
-            if not (error_el and error_el.is_displayed()):
-                return False
+            current_url = self.driver.current_url or ""
         except Exception:
+            current_url = ""
+
+        on_error_page = "ApplicationError.aspx" in current_url
+        if not on_error_page:
+            try:
+                error_el = self.driver.find_element(
+                    By.CSS_SELECTOR,
+                    ".error-container, .error-title, h2.error-title"
+                )
+                on_error_page = error_el and error_el.is_displayed()
+            except Exception:
+                pass
+
+        if not on_error_page:
             return False
 
         self.log(
