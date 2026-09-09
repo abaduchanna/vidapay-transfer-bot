@@ -4314,13 +4314,7 @@ class VidaPayTransferApp(tk.Tk):
     def _build_ui(self):
         # ---- VidaPay header (FixedHeaderManager) ----
         self.header_mgr = FixedHeaderManager(self, title="VidaPay Transfer Bot")
-        # Tag header as protected (immune to theme toggle)
-        if hasattr(self.header_mgr, 'header_frame'):
-            self.header_mgr.header_frame._tag = "header"
-            for child in self.header_mgr.header_frame.winfo_children():
-                child._tag = "header"
-                for grandchild in child.winfo_children():
-                    grandchild._tag = "header_label"
+        # header_manager already tags all header widgets at init — no override needed
         # Load logo
         try:
             _lp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "VidaPay_Logo.png")
