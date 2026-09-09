@@ -2291,6 +2291,30 @@ class VidapayTransferSystem:
             account_input.send_keys(Keys.ENTER)
             time.sleep(3)
 
+            # 1a. Detect Application Error after account entry and recover.
+            try:
+                current_url_after = self.driver.current_url or ""
+                if "ApplicationError" in current_url_after or "Error" in current_url_after:
+                    self.log(
+                        f"⚠️ Application Error after account entry. "
+                        f"Recovering and retrying transfer..."
+                    )
+                    self._recover_from_application_error(
+                        target_url="https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
+                    )
+                    time.sleep(3)
+                    # Re-acquire account input after recovery
+                    account_input = WebDriverWait(self.driver, 20).until(
+                        EC.element_to_be_clickable((By.ID, "rcbAccount_Input"))
+                    )
+                    account_input.clear()
+                    account_input.send_keys(target_account_id)
+                    time.sleep(1)
+                    account_input.send_keys(Keys.ENTER)
+                    time.sleep(3)
+            except Exception:
+                pass
+
             # 1b. Check if the account was actually selected.
             # If the dropdown still shows "Select Account..." or the
             # account ID we typed is still in the input but not selected,
@@ -2754,17 +2778,15 @@ class WhatsAppScraper:
         # the browser session already opened for VidaPay (False).
         self.owns_driver = False
 
-        # Parse reply phrases from the comma-separated string provided by
-        # the GUI.  These override the hardcoded REPLY_HANDLING_PHRASES
-        # when checking for handling replies.
+        # Parse reply phrases from the comma-separated string provided by the GUI.
+        # Empty field = no skip phrases (do not fall back to hardcoded list).
         if reply_phrases_str and reply_phrases_str.strip():
             self.reply_phrases = [
                 p.strip().lower() for p in reply_phrases_str.split(",")
                 if p.strip()
             ]
         else:
-            # Fallback to the default hardcoded list
-            self.reply_phrases = list(self.REPLY_HANDLING_PHRASES)
+            self.reply_phrases = []
 
     def _wa_page_state(self):
         """Return a string describing what WhatsApp Web is showing right now.
@@ -4097,13 +4119,14 @@ class WhatsAppScraper:
             )
 
             # ── Check for handling phrases in the relevant text ──
-            # Use the user-configured reply phrases (from the GUI field)
-            # instead of the hardcoded defaults.
+            # Match on word boundaries so short phrases like "ack" don't
+            # trigger inside unrelated words (e.g. "bounce back").
             for phrase in self.reply_phrases:
-                if phrase in text_to_check:
+                pattern = r'(?<![a-z0-9])' + re.escape(phrase) + r'(?![a-z0-9])'
+                m = re.search(pattern, text_to_check)
+                if m:
                     # Found a handling reply — skip this transfer.
-                    # Extract a window of text around the match for logging.
-                    phrase_pos = text_to_check.find(phrase)
+                    phrase_pos = m.start()
                     start = max(0, phrase_pos - 20)
                     end = min(len(text_to_check), phrase_pos + len(phrase) + 40)
                     reply_excerpt = chat_text[start:end].strip()
