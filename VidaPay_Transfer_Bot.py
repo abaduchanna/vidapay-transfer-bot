@@ -2297,36 +2297,80 @@ class VidapayTransferSystem:
                 })
                 return False
 
-            # 1. Enter Target Account ID
-            account_input.clear()
-            account_input.send_keys(target_account_id)
-            time.sleep(1)
-            account_input.send_keys(Keys.ENTER)
-            time.sleep(3)
+            # 1. Enter Target Account ID using multi-method retry (cloned from
+            #    VidaPay Ordering bot).  ENTER alone can trigger Application
+            #    Error on the RadComboBox; ARROW_DOWN + TAB is more reliable.
+            def _acct_method1(inp):
+                inp.send_keys(target_account_id)
+                time.sleep(1)
+                inp.send_keys(Keys.ARROW_DOWN)
+                time.sleep(1)
+                inp.send_keys(Keys.TAB)
 
-            # 1a. Detect Application Error after account entry and recover.
-            try:
-                current_url_after = self.driver.current_url or ""
-                if "ApplicationError.aspx" in current_url_after:
-                    self.log(
-                        f"⚠️ Application Error after account entry. "
-                        f"Recovering and retrying transfer..."
-                    )
-                    self._recover_from_application_error(
-                        target_url="https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
-                    )
-                    time.sleep(3)
-                    # Re-acquire account input after recovery
-                    account_input = WebDriverWait(self.driver, 20).until(
-                        EC.element_to_be_clickable((By.ID, "rcbAccount_Input"))
-                    )
+            def _acct_method2(inp):
+                inp.send_keys(target_account_id)
+                time.sleep(2)
+                items = self.driver.find_elements(
+                    By.CSS_SELECTOR, ".rcbItem, .rcbHovered, li[class*='rcb']"
+                )
+                for item in items:
+                    if target_account_id in (item.text or ""):
+                        item.click()
+                        return
+                inp.send_keys(Keys.ENTER)
+
+            def _acct_method3(inp):
+                inp.send_keys(target_account_id)
+                time.sleep(1)
+                inp.send_keys(Keys.ENTER)
+
+            _account_selected = False
+            for _method in (_acct_method1, _acct_method2, _acct_method3):
+                try:
                     account_input.clear()
-                    account_input.send_keys(target_account_id)
-                    time.sleep(1)
-                    account_input.send_keys(Keys.ENTER)
+                    time.sleep(0.5)
+                    _method(account_input)
                     time.sleep(3)
-            except Exception:
-                pass
+                    # Bail if Application Error appeared after this method.
+                    try:
+                        _url_now = self.driver.current_url or ""
+                    except Exception:
+                        _url_now = ""
+                    if "ApplicationError.aspx" in _url_now:
+                        self.log(
+                            f"⚠️ Application Error after account entry. "
+                            f"Recovering and retrying..."
+                        )
+                        if self._recover_from_application_error(
+                            target_url="https://www.vidapaycrm.com/InventoryReassignmentTool.aspx"
+                        ):
+                            time.sleep(3)
+                            # Re-acquire input for next method attempt
+                            _inp_poll = None
+                            for _ in range(30):
+                                try:
+                                    _inp_poll = self.driver.find_element(
+                                        By.ID, "rcbAccount_Input"
+                                    )
+                                    if _inp_poll:
+                                        break
+                                except Exception:
+                                    pass
+                                time.sleep(0.5)
+                            if _inp_poll:
+                                account_input = _inp_poll
+                        continue  # try next method
+                    _account_selected = True
+                    break
+                except Exception as _me:
+                    self.log(f"Account entry method failed: {_me}")
+                    continue
+
+            if not _account_selected:
+                self.log(
+                    f"❌ All account entry methods failed for '{target_account_id}'."
+                )
+                return False
 
             # 1b. Check if the account was actually selected.
             # If the dropdown still shows "Select Account..." or the
