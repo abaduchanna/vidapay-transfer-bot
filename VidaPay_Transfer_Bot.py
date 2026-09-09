@@ -2127,27 +2127,25 @@ class VidapayTransferSystem:
                 self.log(f"Current URL: {current_url[:80]}")
 
                 # ── Step 3: Wait for the VidaPay page to fully load ──
-                # Use WebDriverWait instead of a fixed sleep so we don't
-                # wait longer than necessary.
-                try:
-                    self.wait.until(
-                        EC.presence_of_element_located(
-                            (By.ID, "rcbAccount_Input")
-                        )
-                    )
-                except Exception:
-                    # If the Account input isn't found, we might be on an
-                    # Application Error page.  Check for that and recover.
+                # Poll for account input — avoid WebDriverWait which triggers
+                # msedgedriver GetHandleVerifier crash on timeout.
+                _found_input = False
+                for _ in range(60):  # up to 30s
                     try:
-                        if self._recover_from_application_error(target_url=TARGET_URL):
-                            # Wait again for the Account input after recovery
-                            self.wait.until(
-                                EC.presence_of_element_located(
-                                    (By.ID, "rcbAccount_Input")
-                                )
-                            )
+                        if self.driver.find_element(By.ID, "rcbAccount_Input"):
+                            _found_input = True
+                            break
                     except Exception:
-                        pass  # No error page — re-raise the original timeout
+                        pass
+                    try:
+                        if "ApplicationError.aspx" in (self.driver.current_url or ""):
+                            if self._recover_from_application_error(target_url=TARGET_URL):
+                                # Reset loop after recovery
+                                time.sleep(2)
+                                continue
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
 
                 time.sleep(1)
                 # Remember this tab so _navigate_back_to_main_panel can
@@ -2434,7 +2432,27 @@ class VidapayTransferSystem:
             # 4. Proceed to Next (force-enable first — VidaPay leaves the
             #    button disabled until the page's own JS flips it, but we've
             #    already populated everything we need).
-            next_btn = self.driver.find_element(By.ID, "btnNext")
+            # Use manual find + try/except instead of WebDriverWait to avoid
+            # the msedgedriver GetHandleVerifier crash on timeout.
+            next_btn = None
+            for _ in range(20):  # up to 10s
+                try:
+                    next_btn = self.driver.find_element(By.ID, "btnNext")
+                    if next_btn:
+                        break
+                except Exception:
+                    pass
+                # Bail early if Application Error appeared
+                try:
+                    if "ApplicationError.aspx" in (self.driver.current_url or ""):
+                        raise RuntimeError("Application Error on Next button wait")
+                except RuntimeError:
+                    raise
+                except Exception:
+                    pass
+                time.sleep(0.5)
+            if not next_btn:
+                raise RuntimeError("btnNext not found after 10s")
             try:
                 self.driver.execute_script(
                     "arguments[0].removeAttribute('disabled');", next_btn
@@ -2444,15 +2462,33 @@ class VidapayTransferSystem:
             self.driver.execute_script("arguments[0].click();", next_btn)
             time.sleep(2)
 
-            # 5. Submit Transfer
-            submit_btn = self.wait.until(
-                EC.element_to_be_clickable(
-                    (By.ID, "MainContent_submitButton")
+            # 5. Submit Transfer — manual polling, NOT WebDriverWait, to
+            #    avoid the GetHandleVerifier crash msedgedriver throws when
+            #    WebDriverWait times out internally.
+            submit_btn = None
+            for _ in range(60):  # up to 30s
+                try:
+                    btn = self.driver.find_element(
+                        By.ID, "MainContent_submitButton"
+                    )
+                    if btn and btn.is_displayed():
+                        submit_btn = btn
+                        break
+                except Exception:
+                    pass
+                try:
+                    if "ApplicationError.aspx" in (self.driver.current_url or ""):
+                        raise RuntimeError("Application Error while waiting for Submit")
+                except RuntimeError:
+                    raise
+                except Exception:
+                    pass
+                time.sleep(0.5)
+            if not submit_btn:
+                raise RuntimeError(
+                    "Submit button not found after 30s — page may have errored"
                 )
-            )
-            self.driver.execute_script(
-                "arguments[0].click();", submit_btn
-            )
+            self.driver.execute_script("arguments[0].click();", submit_btn)
             self.log(
                 f"Transfer submitted successfully to {target_account_id}."
             )
