@@ -257,8 +257,15 @@ def _pip_cmd():
 
 
 def _missing_python_packages():
-    return [mod for mod in PIP_DEPENDENCIES
-            if importlib.util.find_spec(mod) is None]
+    # Use importlib.import_module (actually loads the module) instead of
+    # find_spec, which returns None for bundled modules in PyInstaller exes.
+    missing = []
+    for mod in PIP_DEPENDENCIES:
+        try:
+            importlib.import_module(mod)
+        except ImportError:
+            missing.append(mod)
+    return missing
 
 
 def _run_cmd_quiet(cmd, timeout=300):
@@ -5453,18 +5460,33 @@ class VidaPayTransferApp(tk.Tk):
     # ------------------------------------------------------------------
 
     def _auto_setup_deps(self):
-        """Check for missing OCR components; ask to install what's absent."""
+        """Check for missing OCR components; ask to install what's absent.
+
+        Ghostscript is optional (improves some image formats but not required
+        for IMEI OCR). It is installed opportunistically if absent but does
+        NOT block the check or prompt the user when it is the only thing
+        missing.
+        """
         missing_tools = []
         if not _is_tesseract_installed():
             missing_tools.append("Tesseract OCR")
-        if not _ghostscript_installed():
-            missing_tools.append("Ghostscript")
+        # Ghostscript: install silently in background if absent; do not block.
+        gs_missing = not _ghostscript_installed()
         missing_pkgs = _missing_python_packages()
 
         if not missing_tools and not missing_pkgs:
-            self.log_msg(
-                "OCR dependencies OK (Tesseract + Ghostscript found)."
-            )
+            if gs_missing:
+                self.log_msg(
+                    "OCR dependencies OK. Ghostscript not found — "
+                    "installing in background (optional)."
+                )
+                threading.Thread(
+                    target=self._install_ghostscript, daemon=True
+                ).start()
+            else:
+                self.log_msg(
+                    "OCR dependencies OK (Tesseract + Ghostscript found)."
+                )
             return
 
         self.after(
